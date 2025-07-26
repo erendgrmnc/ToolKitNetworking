@@ -57,16 +57,18 @@ include_directories(
 set(SOURCE 
     PluginMain.cpp
     NetworkBase.cpp
-    NetworkEntity.cpp
     NetworkState.cpp
-    NetworkPackets.cpp)
+    NetworkPackets.cpp
+    NetworkComponent.cpp
+    GameServer.cpp)
 
 set(HEADERS 
     PluginMain.h
     NetworkBase.h
-    NetworkEntity.h
     NetworkState.h
-    NetworkPackets.h)
+    NetworkPackets.h
+    NetworkComponent.h
+    GameServer.h)
 ###############################
 # Project Source Files End.   #
 ###############################

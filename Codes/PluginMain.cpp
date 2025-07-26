@@ -7,6 +7,8 @@
 
 #include "PluginMain.h"
 
+#include "NetworkComponent.h"
+
 ToolKit::Editor::PluginMain Self;
 
 extern "C" TK_PLUGIN_API ToolKit::Plugin* TK_STDCAL GetInstance() { return &Self; }
@@ -22,9 +24,13 @@ namespace ToolKit
 
     void PluginMain::Frame(float deltaTime) {}
 
-    void PluginMain::OnLoad(XmlDocumentPtr state) {}
+    void PluginMain::OnLoad(XmlDocumentPtr state) {
+	    ToolKitNetworking::NetworkComponent::StaticClass()->MetaKeys[Editor::PluginMain]
+    }
 
-    void PluginMain::OnUnload(XmlDocumentPtr state) {}
+    void PluginMain::OnUnload(XmlDocumentPtr state) {
+        GetObjectFactory()->Unregister<ToolKitNetworking::NetworkComponent>();
+    }
 
   } // namespace Editor
 } // namespace ToolKit

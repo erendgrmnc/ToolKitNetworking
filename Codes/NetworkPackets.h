@@ -1,7 +1,7 @@
 #pragma once
 #include "NetworkState.h"
 
-namespace ToolKitNetworking {
+namespace ToolKit::ToolKitNetworking {
 
 
 	enum NetworkMessage {
@@ -32,7 +32,7 @@ namespace ToolKitNetworking {
 		int fullPacketID = -1;
 		int objectID = -1;
 
-		ToolKitNetworking::NetworkState fullState;
+		NetworkState fullState;
 
 		FullPacket() {
 			type = ToolKitNetworking::NetworkMessage::FullState;

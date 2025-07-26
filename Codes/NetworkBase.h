@@ -4,10 +4,10 @@ struct _ENetHost;
 struct _ENetPeer;
 struct _ENetEvent;
 
-#include <enet/enet.h>
+#include <enet/enet.h>fffffffffffffffffffff
 #include <map>
 
-namespace ToolKitNetworking {
+namespace ToolKit::ToolKitNetworking {
 	struct GamePacket;
 
 	class PacketReceiver {
