@@ -8,11 +8,9 @@ namespace ToolKit::ToolKitNetworking {
 
 	TKDefineClass(NetworkComponent, Component);
 
-	NetworkComponent::NetworkComponent(ToolKit::Entity& entity, int id) : entity(entity) {
+	void NetworkComponent::InitNetworkObject(ToolKit::Entity& entity, int id) {
 		networkID = id;
-	}
-
-	NetworkComponent::~NetworkComponent() {
+		this->entity = &entity;
 	}
 
 	bool NetworkComponent::ReadPacket(GamePacket& packet) {
@@ -57,12 +55,11 @@ namespace ToolKit::ToolKitNetworking {
 		stateHistory.push_back(lastFullState);
 	}
 
-	ComponentPtr NetworkComponent::Copy(ToolKit::EntityPtr ntt) {
-		NetworkComponentPtr dst = ToolKit::MakeNewPtr<ToolKitNetworking::NetworkComponent>();
-		dst->m_entity = ntt;
-		dst->m_localData = m_localData;
-
-		return dst;
+	ComponentPtr NetworkComponent::Copy(EntityPtr ntt) {
+		NetworkComponentPtr nc = MakeNewPtr<NetworkComponent>();
+		nc->m_localData = m_localData;
+		nc->m_entity = ntt;
+		return nc;
 	}
 
 	bool NetworkComponent::GetNetworkState(int stateID, ToolKitNetworking::NetworkState& state) {
@@ -97,8 +94,8 @@ namespace ToolKit::ToolKitNetworking {
 		fullOrientation.z += ((float)packet.orientation[2]) / 127.0f;
 		fullOrientation.w += ((float)packet.orientation[3]) / 127.0f;
 
-		entity.m_node->SetTranslation(fullPos);
-		entity.m_node->SetOrientation(fullOrientation);
+		entity->m_node->SetTranslation(fullPos);
+		entity->m_node->SetOrientation(fullOrientation);
 
 		return true;
 	}
@@ -111,8 +108,8 @@ namespace ToolKit::ToolKitNetworking {
 
 		lastFullState = packet.fullState;
 
-		entity.m_node->SetTranslation(lastFullState.GetPosition());
-		entity.m_node->SetOrientation(lastFullState.GetOrientation());
+		entity->m_node->SetTranslation(lastFullState.GetPosition());
+		entity->m_node->SetOrientation(lastFullState.GetOrientation());
 		stateHistory.emplace_back(lastFullState);
 
 		return true;
@@ -131,8 +128,8 @@ namespace ToolKit::ToolKitNetworking {
 		deltaPacket->fullID = stateID;
 		deltaPacket->objectID = networkID;
 
-		Vec3 currentPos = entity.m_node->GetTranslation();
-		Quaternion currentOrientation = entity.m_node->GetOrientation();
+		Vec3 currentPos = entity->m_node->GetTranslation();
+		Quaternion currentOrientation = entity->m_node->GetOrientation();
 
 		// find difference between current game states orientation + position and the selected states orientation + position
 		currentPos -= state.GetPosition();
@@ -156,8 +153,8 @@ namespace ToolKit::ToolKitNetworking {
 
 
 		fullPacket->objectID = networkID;
-		fullPacket->fullState.SetPosition(entity.m_node->GetTranslation());
-		fullPacket->fullState.SetOrientation(entity.m_node->GetOrientation());
+		fullPacket->fullState.SetPosition(entity->m_node->GetTranslation());
+		fullPacket->fullState.SetOrientation(entity->m_node->GetOrientation());
 
 		int lastID = lastFullState.GetNetworkStateID();
 		fullPacket->fullState.SetNetworkStateID(lastID++);
@@ -167,18 +164,6 @@ namespace ToolKit::ToolKitNetworking {
 
 		return true;
 
-	}
-
-	void NetworkComponent::ParameterConstructor() {
-		ToolKit::Component::ParameterConstructor();
-	}
-
-	void NetworkComponent::ParameterEventConstructor() {
-		Component::ParameterEventConstructor();
-	}
-
-	ToolKit::XmlNode* NetworkComponent::SerializeImp(ToolKit::XmlDocument* doc, ToolKit::XmlNode* parent) const {
-		return Component::SerializeImp(doc, parent);
 	}
 }
 

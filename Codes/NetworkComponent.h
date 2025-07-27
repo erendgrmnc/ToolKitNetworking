@@ -15,14 +15,16 @@ namespace ToolKit {
 
 
 		typedef std::shared_ptr<class NetworkComponent> NetworkComponentPtr;
+		typedef std::vector<NetworkComponentPtr> NetworkComponentPtrArray;
+
+		static VariantCategory NetworkComponentCategory{ "Network Component", 90 };
 
 		class NetworkComponent : public ToolKit::Component {
 
 		public:
 			TKDeclareClass(NetworkComponent, Component)
 
-			NetworkComponent(ToolKit::Entity& entity, int id);
-			virtual ~NetworkComponent();
+			virtual void InitNetworkObject(ToolKit::Entity& entity, int id);
 
 			virtual bool ReadPacket(ToolKitNetworking::GamePacket& packet);
 			virtual bool WritePacket(ToolKitNetworking::GamePacket** packet, bool deltaFrame, int stateID);
@@ -33,32 +35,27 @@ namespace ToolKit {
 			NetworkState& GetLatestNetworkState();
 			void SetLatestNetworkState(ToolKitNetworking::NetworkState& lastState);
 
-			ComponentPtr Copy(ToolKit::EntityPtr ntt) override;
+			ComponentPtr Copy(EntityPtr ntt) override;
+
 		protected:
 
 			bool GetNetworkState(int stateID, ToolKitNetworking::NetworkState& state);
-
 			virtual bool ReadDeltaPacket(ToolKitNetworking::DeltaPacket& packet);
 			virtual bool ReadFullPacket(ToolKitNetworking::FullPacket& packet);
 
 			virtual bool WriteDeltaPacket(ToolKitNetworking::GamePacket** packet, int stateID);
 			virtual bool WriteFullPacket(ToolKitNetworking::GamePacket** packet);
 
-		protected:
-			ToolKit::Entity& entity;
+
+			ToolKit::Entity* entity = nullptr;
 
 			int deltaErrors = 0;
 			int fullErrors = 0;
-			int networkID;
+			int networkID = -1;
 
 			ToolKitNetworking::NetworkState lastFullState;
 
 			std::vector<ToolKitNetworking::NetworkState> stateHistory;
-
-			void ParameterConstructor() override;
-			void ParameterEventConstructor() override;
-			ToolKit::XmlNode* SerializeImp(ToolKit::XmlDocument* doc, ToolKit::XmlNode* parent) const override;
-
 		};
 	}
 

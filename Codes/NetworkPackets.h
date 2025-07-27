@@ -7,7 +7,8 @@ namespace ToolKit::ToolKitNetworking {
 	enum NetworkMessage {
 		None,
 		DeltaState,
-		FullState
+		FullState,
+		Shutdown
 	};
 
 	struct GamePacket {

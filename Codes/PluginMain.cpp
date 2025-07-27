@@ -6,7 +6,7 @@
  */
 
 #include "PluginMain.h"
-
+#include "Editor/EditorMetaKeys.h"
 #include "NetworkComponent.h"
 
 ToolKit::Editor::PluginMain Self;
@@ -25,7 +25,8 @@ namespace ToolKit
     void PluginMain::Frame(float deltaTime) {}
 
     void PluginMain::OnLoad(XmlDocumentPtr state) {
-	    ToolKitNetworking::NetworkComponent::StaticClass()->MetaKeys[Editor::PluginMain]
+        ToolKitNetworking::NetworkComponent::StaticClass()->MetaKeys[ToolKit::Editor::ComponentMenuMetaKey] = "ToolKitNetworking/NetworkComponent:NetworkComponent";
+    	GetObjectFactory()->Register<ToolKitNetworking::NetworkComponent>();
     }
 
     void PluginMain::OnUnload(XmlDocumentPtr state) {
