@@ -60,7 +60,8 @@ set(SOURCE
     NetworkState.cpp
     NetworkPackets.cpp
     NetworkComponent.cpp
-    GameServer.cpp)
+    GameServer.cpp
+    NetworkManager.cpp)
 
 set(HEADERS 
     PluginMain.h
@@ -68,7 +69,8 @@ set(HEADERS
     NetworkState.h
     NetworkPackets.h
     NetworkComponent.h
-    GameServer.h)
+    GameServer.h
+    NetworkManager.h)
 ###############################
 # Project Source Files End.   #
 ###############################
