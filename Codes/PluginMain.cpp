@@ -8,6 +8,9 @@
 #include "PluginMain.h"
 #include "Editor/EditorMetaKeys.h"
 #include "NetworkComponent.h"
+#include "NetworkManager.h"
+#include "ToolKit/Scene.h"
+
 
 ToolKit::Editor::PluginMain Self;
 
@@ -15,23 +18,75 @@ extern "C" TK_PLUGIN_API ToolKit::Plugin* TK_STDCAL GetInstance() { return &Self
 
 namespace ToolKit
 {
-  namespace Editor
-  {
+	namespace Editor
+	{
 
-    void PluginMain::Init(Main* master) { Main::SetProxy(master); }
+		void PluginMain::Init(Main* master) {
+			Main::SetProxy(master);
+		}
 
-    void PluginMain::Destroy() {}
+		void PluginMain::Destroy() {}
 
-    void PluginMain::Frame(float deltaTime) {}
+		void PluginMain::Frame(float deltaTime) {
 
-    void PluginMain::OnLoad(XmlDocumentPtr state) {
-        ToolKitNetworking::NetworkComponent::StaticClass()->MetaKeys[ToolKit::Editor::ComponentMenuMetaKey] = "ToolKitNetworking/NetworkComponent:NetworkComponent";
-    	GetObjectFactory()->Register<ToolKitNetworking::NetworkComponent>();
-    }
+			if (m_networkManager) {
+				m_networkManager->Update(deltaTime);
+			}
+		}
 
-    void PluginMain::OnUnload(XmlDocumentPtr state) {
-        GetObjectFactory()->Unregister<ToolKitNetworking::NetworkComponent>();
-    }
+		void PluginMain::OnLoad(XmlDocumentPtr state) {
+			ToolKitNetworking::NetworkComponent::StaticClass()->MetaKeys[ToolKit::Editor::ComponentMenuMetaKey] = "ToolKitNetworking/NetworkComponent:NetworkComponent";
+			ToolKitNetworking::NetworkManager::StaticClass()->MetaKeys[ToolKit::Editor::ComponentMenuMetaKey] = "ToolKitNetworking/NetworkManager:NetworkManager";
 
-  } // namespace Editor
+			GetObjectFactory()->Register<ToolKitNetworking::NetworkComponent>();
+			GetObjectFactory()->Register<ToolKitNetworking::NetworkManager>();
+		}
+
+		void PluginMain::OnUnload(XmlDocumentPtr state) {
+			GetObjectFactory()->Unregister<ToolKitNetworking::NetworkComponent>();
+			GetObjectFactory()->Unregister<ToolKitNetworking::NetworkManager>();
+		}
+
+		void PluginMain::OnPlay() {
+			TK_LOG("Network plugin onPlay");
+			const auto& entities = GetSceneManager()->GetCurrentScene()->GetEntities();
+
+			for (const auto& entity : entities) {
+				if (auto networkManager = entity->GetComponent<ToolKitNetworking::NetworkManager>()) {
+					m_networkManager = networkManager.get();
+					TK_LOG("Network Manager found");
+				}
+			}
+
+			if (m_networkManager)
+			{
+				if (m_networkManager->GetIsStartingAsServerVal()) {
+					TK_LOG("Starting as server");
+					m_networkManager->StartAsServer(8080);
+				}
+
+				else {
+					//TODO(erendegrmnc): pass ip address of the real host.
+					const std::string ipAddress = "127.0.0.1";
+					TK_LOG("Starting as client");
+					m_networkManager->StartAsClient(ipAddress, 8080);
+				}
+
+			}
+		}
+
+		void PluginMain::OnPause() {
+			TK_LOG("Network plugin onPause");
+		}
+
+		void PluginMain::OnResume() {
+			TK_LOG("Network plugin onResume");
+		}
+
+		void PluginMain::OnStop()
+		{
+			TK_LOG("Network plugin onStop");
+		}
+
+	} // namespace Editor
 } // namespace ToolKit

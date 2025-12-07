@@ -13,22 +13,33 @@
 
 namespace ToolKit
 {
-  namespace Editor
-  {
+	namespace ToolKitNetworking {
+		class NetworkManager;
+	}
 
-    class PluginMain : public Plugin
-    {
-     public:
-      PluginType GetType() override { return PluginType::Editor; }
+	namespace Editor
+	{
 
-      void Init(Main* master) override;
-      void Destroy() override;
-      void Frame(float deltaTime) override;
-      void OnLoad(XmlDocumentPtr state) override;
-      void OnUnload(XmlDocumentPtr state) override;
-    };
+		class PluginMain : public Plugin
+		{
+		public:
+			PluginType GetType() override { return PluginType::Editor; }
 
-  } // namespace Editor
+			void Init(Main* master) override;
+			void Destroy() override;
+			void Frame(float deltaTime) override;
+			void OnLoad(XmlDocumentPtr state) override;
+			void OnUnload(XmlDocumentPtr state) override;
+			void OnPlay() override;
+			void OnPause() override;
+			void OnResume() override;
+			void OnStop() override;
+
+		protected:
+			ToolKitNetworking::NetworkManager* m_networkManager;
+		};
+
+	} // namespace Editor
 } // namespace ToolKit
 
 extern "C" TK_PLUGIN_API ToolKit::Plugin* TK_STDCAL GetInstance();
