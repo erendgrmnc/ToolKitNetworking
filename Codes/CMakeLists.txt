@@ -61,6 +61,7 @@ set(SOURCE
     NetworkPackets.cpp
     NetworkComponent.cpp
     GameServer.cpp
+    GameClient.cpp
     NetworkManager.cpp)
 
 set(HEADERS 
@@ -70,6 +71,7 @@ set(HEADERS
     NetworkPackets.h
     NetworkComponent.h
     GameServer.h
+    GameClient.h
     NetworkManager.h)
 ###############################
 # Project Source Files End.   #

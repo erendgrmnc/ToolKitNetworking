@@ -17,12 +17,12 @@ namespace ToolKit::ToolKitNetworking {
 	}
 
 	NetworkBase::NetworkBase() {
-		netHandle = nullptr;
+		m_netHandle = nullptr;
 	}
 
 	NetworkBase::~NetworkBase() {
-		if (netHandle) {
-			enet_host_destroy(netHandle);
+		if (m_netHandle) {
+			enet_host_destroy(m_netHandle);
 		}
 	}
 

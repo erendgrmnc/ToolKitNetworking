@@ -8,7 +8,8 @@ namespace ToolKit::ToolKitNetworking {
 		None,
 		DeltaState,
 		FullState,
-		Shutdown
+		Shutdown,
+		ClientConnected
 	};
 
 	struct GamePacket {

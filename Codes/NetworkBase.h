@@ -36,7 +36,7 @@ namespace ToolKit::ToolKitNetworking {
 
         bool GetPacketHandlers(int msgID, PacketHandlerIterator &first, PacketHandlerIterator &last) const;
 
-        _ENetHost *netHandle;
+        _ENetHost *m_netHandle;
 
         std::multimap<int, PacketReceiver *> packetHandlers;
     };

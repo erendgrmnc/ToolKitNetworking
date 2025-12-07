@@ -4,26 +4,32 @@
 
 #include "NetworkPackets.h"
 
-namespace ToolKit::ToolKitNetworking {
+namespace ToolKit::ToolKitNetworking
+{
 
 	TKDefineClass(NetworkComponent, Component);
 
-	void NetworkComponent::InitNetworkObject(ToolKit::Entity& entity, int id) {
+	void NetworkComponent::InitNetworkObject(ToolKit::Entity &entity, int id)
+	{
 		networkID = id;
 		this->entity = &entity;
 	}
 
-	bool NetworkComponent::ReadPacket(GamePacket& packet) {
+	bool NetworkComponent::ReadPacket(GamePacket &packet)
+	{
 		if (packet.type == NetworkMessage::DeltaState)
-			return ReadDeltaPacket((DeltaPacket&)packet);
+			return ReadDeltaPacket((DeltaPacket &)packet);
 
 		if (packet.type == NetworkMessage::FullState)
-			return ReadFullPacket((FullPacket&)packet);
+			return ReadFullPacket((FullPacket &)packet);
 	}
 
-	bool NetworkComponent::WritePacket(GamePacket** packet, bool deltaFrame, int stateID) {
-		if (deltaFrame) {
-			if (!WriteDeltaPacket(packet, stateID)) {
+	bool NetworkComponent::WritePacket(GamePacket **packet, bool deltaFrame, int stateID)
+	{
+		if (deltaFrame)
+		{
+			if (!WriteDeltaPacket(packet, stateID))
+			{
 				return WriteFullPacket(packet);
 			}
 			return true;
@@ -31,14 +37,18 @@ namespace ToolKit::ToolKitNetworking {
 		return WriteFullPacket(packet);
 	}
 
-	int NetworkComponent::GetNetworkID() const {
+	int NetworkComponent::GetNetworkID() const
+	{
 		return networkID;
 	}
 
-	void NetworkComponent::UpdateStateHistory(int minID) {
-		for (auto i = stateHistory.begin(); i < stateHistory.end();) {
-			if ((*i).GetNetworkStateID() < minID) {
-				//std::cout << "Removing State: " << i->stateID << "\n";
+	void NetworkComponent::UpdateStateHistory(int minID)
+	{
+		for (auto i = stateHistory.begin(); i < stateHistory.end();)
+		{
+			if ((*i).GetNetworkStateID() < minID)
+			{
+				// std::cout << "Removing State: " << i->stateID << "\n";
 				i = stateHistory.erase(i);
 			}
 			else
@@ -46,37 +56,43 @@ namespace ToolKit::ToolKitNetworking {
 		}
 	}
 
-	NetworkState& NetworkComponent::GetLatestNetworkState() {
+	NetworkState &NetworkComponent::GetLatestNetworkState()
+	{
 		return lastFullState;
 	}
 
-	void NetworkComponent::SetLatestNetworkState(ToolKitNetworking::NetworkState& lastState) {
+	void NetworkComponent::SetLatestNetworkState(ToolKitNetworking::NetworkState &lastState)
+	{
 		lastFullState = lastState;
 		stateHistory.push_back(lastFullState);
 	}
 
-	ComponentPtr NetworkComponent::Copy(EntityPtr ntt) {
+	ComponentPtr NetworkComponent::Copy(EntityPtr ntt)
+	{
 		NetworkComponentPtr nc = MakeNewPtr<NetworkComponent>();
 		nc->m_localData = m_localData;
 		nc->m_entity = ntt;
 		return nc;
 	}
 
-	bool NetworkComponent::GetNetworkState(int stateID, ToolKitNetworking::NetworkState& state) {
+	bool NetworkComponent::GetNetworkState(int stateID, ToolKitNetworking::NetworkState &state)
+	{
 		// get a state ID from state history if needed
-		for (auto i = stateHistory.begin(); i < stateHistory.end(); ++i) {
-			if (i->GetNetworkStateID() == stateID) {
+		for (auto i = stateHistory.begin(); i < stateHistory.end(); ++i)
+		{
+			if (i->GetNetworkStateID() == stateID)
+			{
 				state = (*i);
-				//std::cout << "Successfully found network state.State ID: " << stateID << "\n";
+				// std::cout << "Successfully found network state.State ID: " << stateID << "\n";
 				return true;
-
 			}
 		}
-		//std::cout << "Couldn't find state for ID: " << stateID << ", stateHistorySize: " << stateHistory.size() << "\n";
+		// std::cout << "Couldn't find state for ID: " << stateID << ", stateHistorySize: " << stateHistory.size() << "\n";
 		return false;
 	}
 
-	bool NetworkComponent::ReadDeltaPacket(ToolKitNetworking::DeltaPacket& packet) {
+	bool NetworkComponent::ReadDeltaPacket(ToolKitNetworking::DeltaPacket &packet)
+	{
 		if (packet.fullID != lastFullState.GetNetworkStateID())
 			return false;
 		UpdateStateHistory(packet.fullID);
@@ -100,9 +116,11 @@ namespace ToolKit::ToolKitNetworking {
 		return true;
 	}
 
-	bool NetworkComponent::ReadFullPacket(ToolKitNetworking::FullPacket& packet) {
+	bool NetworkComponent::ReadFullPacket(ToolKitNetworking::FullPacket &packet)
+	{
 
-		if (packet.fullState.GetNetworkStateID() < lastFullState.GetNetworkStateID()) {
+		if (packet.fullState.GetNetworkStateID() < lastFullState.GetNetworkStateID())
+		{
 			return false;
 		}
 
@@ -113,11 +131,11 @@ namespace ToolKit::ToolKitNetworking {
 		stateHistory.emplace_back(lastFullState);
 
 		return true;
-
 	}
 
-	bool NetworkComponent::WriteDeltaPacket(GamePacket** packet, int stateID) {
-		DeltaPacket* deltaPacket = new DeltaPacket();
+	bool NetworkComponent::WriteDeltaPacket(GamePacket **packet, int stateID)
+	{
+		DeltaPacket *deltaPacket = new DeltaPacket();
 		NetworkState state;
 
 		// if we cant get network objects state we fail
@@ -148,9 +166,9 @@ namespace ToolKit::ToolKitNetworking {
 		return true;
 	}
 
-	bool NetworkComponent::WriteFullPacket(GamePacket** packet) {
-		FullPacket* fullPacket = new FullPacket();
-
+	bool NetworkComponent::WriteFullPacket(GamePacket **packet)
+	{
+		FullPacket *fullPacket = new FullPacket();
 
 		fullPacket->objectID = networkID;
 		fullPacket->fullState.SetPosition(entity->m_node->GetTranslation());
@@ -163,7 +181,5 @@ namespace ToolKit::ToolKitNetworking {
 		*packet = fullPacket;
 
 		return true;
-
 	}
 }
-

@@ -3,23 +3,24 @@
 #include <vector>
 #include "NetworkState.h"
 
-
-namespace ToolKit {
+namespace ToolKit
+{
 	class Entity;
 
-	namespace ToolKitNetworking {
+	namespace ToolKitNetworking
+	{
 		struct FullPacket;
 		struct DeltaPacket;
 		class NetworkState;
 		struct GamePacket;
-
 
 		typedef std::shared_ptr<class NetworkComponent> NetworkComponentPtr;
 		typedef std::vector<NetworkComponentPtr> NetworkComponentPtrArray;
 
 		static VariantCategory NetworkComponentCategory{ "Network Component", 90 };
 
-		class NetworkComponent : public ToolKit::Component {
+		class TK_PLUGIN_API NetworkComponent : public ToolKit::Component
+		{
 
 		public:
 			TKDeclareClass(NetworkComponent, Component)
@@ -38,14 +39,12 @@ namespace ToolKit {
 			ComponentPtr Copy(EntityPtr ntt) override;
 
 		protected:
-
 			bool GetNetworkState(int stateID, ToolKitNetworking::NetworkState& state);
 			virtual bool ReadDeltaPacket(ToolKitNetworking::DeltaPacket& packet);
 			virtual bool ReadFullPacket(ToolKitNetworking::FullPacket& packet);
 
 			virtual bool WriteDeltaPacket(ToolKitNetworking::GamePacket** packet, int stateID);
 			virtual bool WriteFullPacket(ToolKitNetworking::GamePacket** packet);
-
 
 			ToolKit::Entity* entity = nullptr;
 
@@ -59,8 +58,4 @@ namespace ToolKit {
 		};
 	}
 
-
 }
-
-
-
