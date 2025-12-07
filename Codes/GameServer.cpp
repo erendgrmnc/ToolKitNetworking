@@ -6,7 +6,7 @@ ToolKit::ToolKitNetworking::GameServer::GameServer(int onPort, int maxClients) {
 	port = onPort;
 	clientMax = maxClients;
 	clientCount = 0;
-	netHandle = nullptr;
+	m_netHandle = nullptr;
 	peers = new int[20];
 	for (int i = 0; i < clientMax; ++i) {
 		peers[i] = -1;
@@ -25,9 +25,9 @@ bool ToolKit::ToolKitNetworking::GameServer::Initialise() {
 	address.host = ENET_HOST_ANY;
 	address.port = port;
 
-	netHandle = enet_host_create(&address, clientMax, 1, 0, 0);
+	m_netHandle = enet_host_create(&address, clientMax, 1, 0, 0);
 
-	if (!netHandle) {
+	if (!m_netHandle) {
 		std::string functionName = __FUNCTION__;
 		std::string logStr = functionName + "failed to create network handle!";
 
@@ -36,15 +36,15 @@ bool ToolKit::ToolKitNetworking::GameServer::Initialise() {
 	}
 
 	char ipString[16];
-	enet_address_get_host_ip(&netHandle->address, ipString, sizeof(ipString));
+	enet_address_get_host_ip(&m_netHandle->address, ipString, sizeof(ipString));
 
 	return true;
 }
 
 void ToolKit::ToolKitNetworking::GameServer::Shutdown() {
 	SendGlobalPacket(NetworkMessage::Shutdown);
-	enet_host_destroy(netHandle);
-	netHandle = nullptr;
+	enet_host_destroy(m_netHandle);
+	m_netHandle = nullptr;
 }
 
 void ToolKit::ToolKitNetworking::GameServer::AddPeer(int peerNumber) {
@@ -65,13 +65,13 @@ void ToolKit::ToolKitNetworking::GameServer::AddPeer(int peerNumber) {
 
 bool ToolKit::ToolKitNetworking::GameServer::SendGlobalReliablePacket(GamePacket& packet) const {
 	ENetPacket* dataPacket = enet_packet_create(&packet, packet.GetTotalSize(), ENET_PACKET_FLAG_RELIABLE);
-	enet_host_broadcast(netHandle, 0, dataPacket);
+	enet_host_broadcast(m_netHandle, 0, dataPacket);
 	return true;
 }
 
 bool ToolKit::ToolKitNetworking::GameServer::SendGlobalPacket(GamePacket& packet) const {
 	ENetPacket* dataPacket = enet_packet_create(&packet, packet.GetTotalSize(), 0);
-	enet_host_broadcast(netHandle, 0, dataPacket);
+	enet_host_broadcast(m_netHandle, 0, dataPacket);
 	return true;
 }
 
@@ -96,10 +96,10 @@ std::string ToolKit::ToolKitNetworking::GameServer::GetIpAddress() const {
 }
 
 void ToolKit::ToolKitNetworking::GameServer::UpdateServer() {
-	if (!netHandle) { return; }
+	if (!m_netHandle) { return; }
 
 	ENetEvent event;
-	while (enet_host_service(netHandle, &event, 0) > 0) {
+	while (enet_host_service(m_netHandle, &event, 0) > 0) {
 		int type = event.type;
 		ENetPeer* p = event.peer;
 		int peer = p->incomingPeerID;
@@ -127,6 +127,7 @@ void ToolKit::ToolKitNetworking::GameServer::UpdateServer() {
 
 void ToolKit::ToolKitNetworking::GameServer::SetMaxClients(int maxClients) {
 	clientMax = maxClients;
+
 }
 
 
