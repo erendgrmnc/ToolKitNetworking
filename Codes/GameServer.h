@@ -1,5 +1,7 @@
 #pragma once
 #include "NetworkBase.h"
+#include <vector>
+#include <string>
 
 namespace ToolKit::ToolKitNetworking {
 	class GameServer : public NetworkBase {
@@ -11,12 +13,13 @@ namespace ToolKit::ToolKitNetworking {
 		void Shutdown();
 
 		virtual void AddPeer(int peerNumber);
+		virtual void RemovePeer(int peerNumber);
 
 		bool SendGlobalReliablePacket(GamePacket& packet) const;
 		bool SendGlobalPacket(GamePacket& packet) const;
 		bool SendGlobalPacket(int messageID) const;
 
-		bool GetPeer(int peerNumber, int& peerId) const;
+		bool GetPeer(int peerIndex, int& peerId) const;
 
 		std::string GetIpAddress() const;
 
@@ -26,10 +29,10 @@ namespace ToolKit::ToolKitNetworking {
 
 		int	port;
 		int	clientMax;
-		int	clientCount;
-		int* peers;
 
-		char ipAddress[16];
+		std::vector<int> m_connectedPeers;
+
+		std::string m_ipAddress;
 
 	};
 }
