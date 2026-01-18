@@ -18,6 +18,9 @@ namespace ToolKit::ToolKitNetworking {
 		bool SendGlobalReliablePacket(GamePacket& packet) const;
 		bool SendGlobalPacket(GamePacket& packet) const;
 		bool SendGlobalPacket(int messageID) const;
+		
+		// New raw send
+		bool SendGlobalPacket(const void* data, size_t size, bool reliable) const;
 
 		bool GetPeer(int peerIndex, int& peerId) const;
 

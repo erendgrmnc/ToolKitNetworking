@@ -2,6 +2,8 @@
 #include "GameServer.h"
 #include "GameClient.h"
 #include "NetworkPackets.h"
+#include "NetworkComponent.h"
+#include <algorithm>
 
 
 #ifdef _WIN32
@@ -19,16 +21,41 @@
 namespace ToolKit::ToolKitNetworking {
 
 	TKDefineClass(NetworkManager, Component);
+	NetworkManager* NetworkManager::Instance = nullptr;
 }
 
 
 ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
+	Instance = this;
 	m_server = nullptr;
+	m_serverTick = 0;
 
 	NetworkBase::Initialise();
 }
 
 ToolKit::ToolKitNetworking::NetworkManager::~NetworkManager() {
+	Stop();
+	if (Instance == this) {
+		Instance = nullptr;
+	}
+	NetworkBase::Destroy();
+}
+
+void ToolKit::ToolKitNetworking::NetworkManager::RegisterComponent(NetworkComponent* networkComponent) {
+	if (networkComponent->GetNetworkID() == -1) {
+		networkComponent->SetNetworkID(m_nextNetworkID++);
+	}
+	m_networkComponents.push_back(networkComponent);
+
+	std::string logMsg = "NetworkComponent Registered: ID " + std::to_string(networkComponent->GetNetworkID());
+	TK_LOG(logMsg.c_str());
+}
+
+void ToolKit::ToolKitNetworking::NetworkManager::UnregisterComponent(NetworkComponent* networkComponent) {
+	auto it = std::remove(m_networkComponents.begin(), m_networkComponents.end(), networkComponent);
+	if (it != m_networkComponents.end()) {
+		m_networkComponents.erase(it, m_networkComponents.end());
+	}
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(const std::string& host, int portNum) {
@@ -39,8 +66,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(const std::string
 	{
 		bool isConnected = client->Connect(host, portNum);
 		if (isConnected) {
-			client->RegisterPacketHandler(NetworkMessage::DeltaState, this);
-			client->RegisterPacketHandler(NetworkMessage::FullState, this);
+			client->RegisterPacketHandler(NetworkMessage::Snapshot, this);
 			client->RegisterPacketHandler(NetworkMessage::ClientConnected, this);
 			client->RegisterPacketHandler(NetworkMessage::Shutdown, this);
 		}
@@ -57,45 +83,104 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
 	TK_LOG(serverLogStr.c_str());
 }
 
-void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(int type, GamePacket* payload, int source) {
+void ToolKit::ToolKitNetworking::NetworkManager::Stop() {
+	if (m_server) {
+		m_server->Shutdown();
+		m_server = nullptr;
+	}
+	if (m_client) {
+		m_client->Disconnect();
+		m_client = nullptr;
+	}
 }
 
-void ToolKit::ToolKitNetworking::NetworkManager::Update(float dt)
+void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(int type, GamePacket* payload, int source) {
+	if (type == NetworkMessage::Snapshot) {
+		m_receiveStream.Clear();
+
+		int totalSize = payload->GetTotalSize();
+		m_receiveStream.Write((void*)payload, totalSize);
+
+		m_receiveStream.readOffset = sizeof(WorldSnapshotPacket);
+		WorldSnapshotPacket* packet = (WorldSnapshotPacket*)payload;
+
+		int entityCount = packet->entityCount;
+
+		for (int i = 0; i < entityCount; i++) {
+			int networkID = -1;
+			if (!m_receiveStream.Read(networkID)) break;
+
+			int packetSize = 0;
+			if (!m_receiveStream.Read(packetSize)) break;
+
+			NetworkComponent* targetComponent = nullptr;
+			for (auto* networkComponent : m_networkComponents) {
+				if (networkComponent->GetNetworkID() == networkID) {
+					targetComponent = networkComponent;
+					break;
+				}
+			}
+
+			if (targetComponent) {
+				targetComponent->Deserialize(m_receiveStream, true);
+				std::string logMsg = "Client received packet for object: " + std::to_string(networkID);
+				TK_LOG(logMsg.c_str());
+			}
+			else {
+				m_receiveStream.Skip(packetSize);
+			}
+		}
+	}
+}
+
+void ToolKit::ToolKitNetworking::NetworkManager::BroadcastSnapshot() {
+	if (!m_server) return;
+
+	m_sendStream.Clear();
+
+	WorldSnapshotPacket header;
+	header.type = NetworkMessage::Snapshot;
+	header.size = 0;
+	header.serverTick = m_serverTick;
+	header.entityCount = (int)m_networkComponents.size();
+	m_sendStream.Write(header);
+
+	for (auto* networkComponent : m_networkComponents) {
+		networkComponent->Serialize(m_sendStream, true);
+
+		std::string logMsg = "Packet sent for object: " + std::to_string(networkComponent->GetNetworkID());
+		TK_LOG(logMsg.c_str());
+	}
+
+	size_t totalSize = m_sendStream.GetSize();
+	WorldSnapshotPacket* packetHeader = (WorldSnapshotPacket*)m_sendStream.GetData();
+	packetHeader->size = (short)(totalSize - sizeof(GamePacket));
+
+	m_server->SendGlobalPacket(m_sendStream.GetData(), totalSize, false);
+}
+
+void ToolKit::ToolKitNetworking::NetworkManager::Update(float deltaTime)
 {
 	if (m_server.get())
 	{
-		UpdateAsServer(dt);
+		UpdateAsServer(deltaTime);
 	}
 
 	if (m_client.get()) {
-		UpdateAsClient(dt);
+		UpdateAsClient(deltaTime);
 	}
 }
 
-void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsServer(float dt) {
-	m_packetsToSnapshot--;
-	if (m_packetsToSnapshot < 0) {
-		// full packet
-		BroadcastSnapshot(false);
-		m_packetsToSnapshot = 5;
-	}
-	else {
-		// use delta packets
-		//BroadcastSnapshot(true);
-
-		// dont use delta packets
-		BroadcastSnapshot(false);
-	}
+void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsServer(float deltaTime) {
+	m_serverTick++;
+	BroadcastSnapshot();
 
 	m_server.get()->UpdateServer();
 
 }
 
-void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsClient(float dt) {
+void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsClient(float deltaTime) {
 	m_client.get()->UpdateClient();
-}
-
-void ToolKit::ToolKitNetworking::NetworkManager::BroadcastSnapshot(bool isDeltaFrame) {
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::UpdateMinimumState() {
@@ -177,9 +262,9 @@ const char* ToolKit::ToolKitNetworking::NetworkManager::GetIPV4()
 	return ipBuffer;
 }
 
-ToolKit::ComponentPtr ToolKit::ToolKitNetworking::NetworkManager::Copy(EntityPtr ntt) {
+ToolKit::ComponentPtr ToolKit::ToolKitNetworking::NetworkManager::Copy(EntityPtr entityPtr) {
 	NetworkManagerPtr nc = MakeNewPtr<NetworkManager>();
 	nc->m_localData = m_localData;
-	nc->m_entity = ntt;
+	nc->m_entity = entityPtr;
 	return nc;
 }

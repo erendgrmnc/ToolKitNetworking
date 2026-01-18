@@ -1,5 +1,6 @@
 #include "GameClient.h"
 #include "NetworkPackets.h"
+#include <iostream>
 
 ToolKit::ToolKitNetworking::GameClient::GameClient()
 {
@@ -12,7 +13,6 @@ ToolKit::ToolKitNetworking::GameClient::GameClient()
 
 ToolKit::ToolKitNetworking::GameClient::~GameClient()
 {
-	enet_host_destroy(m_netHandle);
 }
 
 bool ToolKit::ToolKitNetworking::GameClient::Connect(const std::string& host, int portNum)
@@ -20,10 +20,8 @@ bool ToolKit::ToolKitNetworking::GameClient::Connect(const std::string& host, in
 	ENetAddress address;
 	address.port = portNum;
 
-	// ENet parses and converts the host string internally
 	if (enet_address_set_host(&address, host.c_str()) != 0)
 	{
-		//TK_LOG("Failed to resolve host.");
 		return false;
 	}
 
@@ -34,38 +32,33 @@ bool ToolKit::ToolKitNetworking::GameClient::Connect(const std::string& host, in
 
 bool ToolKit::ToolKitNetworking::GameClient::UpdateClient()
 {
-	// if there is no net handle we cannot handle packets
 	if (m_netHandle == nullptr)
 		return false;
 
 	m_timerSinceLastPacket++;
 
-	// handle incoming packets
 	ENetEvent event;
 	while (enet_host_service(m_netHandle, &event, 0) > 0) {
 		if (event.type == ENET_EVENT_TYPE_CONNECT) {
-			//erendgrmnc: I remember +1 is needed because when counting server as a player, outgoing peer Id is not increasing.
 			m_PeerId = m_netPeer->outgoingPeerID + 1;
 			m_isConnected = true;
-			//TK_LOG("Connected to server!");
 
 			for (const auto& callback : m_onClientConnectedToServer) {
 				callback();
 			}
 
-			//TODO(eren.degirmenci): send player init packet.
 			SendClientInitPacket();
 		}
 		else if (event.type == ENET_EVENT_TYPE_RECEIVE) {
-			//std::cout << "Client Packet recieved..." << std::endl;
 			GamePacket* packet = (GamePacket*)event.packet->data;
-			ProcessPacket(packet);
+			if (!ProcessPacket(packet)) {
+				TK_LOG("Client: Failed to process packet (No handler?)");
+			}
 			m_timerSinceLastPacket = 0.0f;
 		}
-		// once packet data is handled we can destroy packet and go to next
+
 		enet_packet_destroy(event.packet);
 	}
-	// return false if client is no longer receiving packets
 	if (m_timerSinceLastPacket > 20.0f) {
 		return false;
 	}
@@ -105,6 +98,11 @@ void ToolKit::ToolKitNetworking::GameClient::SendReliablePacket(GamePacket& payl
 
 void ToolKit::ToolKitNetworking::GameClient::Disconnect()
 {
+	if (m_netPeer) {
+		enet_peer_disconnect_now(m_netPeer, 0);
+		m_netPeer = nullptr;
+	}
+	m_isConnected = false;
 }
 
 void ToolKit::ToolKitNetworking::GameClient::AddOnClientConnected(const std::function<void()>& callback)

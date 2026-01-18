@@ -43,6 +43,11 @@ namespace ToolKit
 		}
 
 		void PluginMain::OnUnload(XmlDocumentPtr state) {
+			if (m_networkManager)
+			{
+				m_networkManager->Stop();
+				m_networkManager = nullptr;
+			}
 			GetObjectFactory()->Unregister<ToolKitNetworking::NetworkComponent>();
 			GetObjectFactory()->Unregister<ToolKitNetworking::NetworkManager>();
 		}
@@ -86,6 +91,11 @@ namespace ToolKit
 		void PluginMain::OnStop()
 		{
 			TK_LOG("Network plugin onStop");
+			if (m_networkManager)
+			{
+				m_networkManager->Stop();
+				m_networkManager = nullptr;
+			}
 		}
 
 	} // namespace Editor

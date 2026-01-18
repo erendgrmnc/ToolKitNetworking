@@ -1,7 +1,7 @@
 #pragma once
 #include <Component.h>
 #include <vector>
-#include "NetworkState.h"
+#include "NetworkPackets.h"
 
 namespace ToolKit
 {
@@ -23,12 +23,17 @@ namespace ToolKit
 		{
 
 		public:
+			
 			TKDeclareClass(NetworkComponent, Component)
 
-			virtual void InitNetworkObject(ToolKit::Entity& entity, int id);
+			virtual ~NetworkComponent();
 
-			virtual bool ReadPacket(ToolKitNetworking::GamePacket& packet);
-			virtual bool WritePacket(ToolKitNetworking::GamePacket** packet, bool deltaFrame, int stateID);
+			void SetNetworkID(int id);
+
+			virtual void Serialize(PacketStream& stream, bool fullState);
+			virtual void Deserialize(PacketStream& stream, bool fullState);
+
+			void ParameterConstructor() override;
 
 			int GetNetworkID() const;
 			void UpdateStateHistory(int minID);
@@ -36,17 +41,10 @@ namespace ToolKit
 			NetworkState& GetLatestNetworkState();
 			void SetLatestNetworkState(ToolKitNetworking::NetworkState& lastState);
 
-			ComponentPtr Copy(EntityPtr ntt) override;
+			ComponentPtr Copy(EntityPtr entityPtr) override;
 
 		protected:
 			bool GetNetworkState(int stateID, ToolKitNetworking::NetworkState& state);
-			virtual bool ReadDeltaPacket(ToolKitNetworking::DeltaPacket& packet);
-			virtual bool ReadFullPacket(ToolKitNetworking::FullPacket& packet);
-
-			virtual bool WriteDeltaPacket(ToolKitNetworking::GamePacket** packet, int stateID);
-			virtual bool WriteFullPacket(ToolKitNetworking::GamePacket** packet);
-
-			ToolKit::Entity* entity = nullptr;
 
 			int deltaErrors = 0;
 			int fullErrors = 0;

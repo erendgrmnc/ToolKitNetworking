@@ -23,6 +23,7 @@ namespace ToolKit::ToolKitNetworking {
 	NetworkBase::~NetworkBase() {
 		if (m_netHandle) {
 			enet_host_destroy(m_netHandle);
+			m_netHandle = nullptr;
 		}
 	}
 

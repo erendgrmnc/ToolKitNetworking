@@ -4,7 +4,7 @@ struct _ENetHost;
 struct _ENetPeer;
 struct _ENetEvent;
 
-#include <enet/enet.h>fffffffffffffffffffff
+#include <enet/enet.h>
 #include <map>
 
 namespace ToolKit::ToolKitNetworking {
@@ -26,9 +26,10 @@ namespace ToolKit::ToolKitNetworking {
 
         void ClearPacketHandlers();
 
+        virtual ~NetworkBase();
+
     protected:
         NetworkBase();
-        ~NetworkBase();
 
         bool ProcessPacket(GamePacket *p, int peerID = -1) const;
 

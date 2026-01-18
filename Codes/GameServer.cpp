@@ -90,6 +90,15 @@ bool GameServer::SendGlobalPacket(int messageID) const {
 	return SendGlobalPacket(packet);
 }
 
+bool GameServer::SendGlobalPacket(const void* data, size_t size, bool reliable) const {
+	if (!m_netHandle) return false;
+	
+	enet_uint32 flags = reliable ? ENET_PACKET_FLAG_RELIABLE : 0;
+	ENetPacket* dataPacket = enet_packet_create(data, size, flags);
+	enet_host_broadcast(m_netHandle, 0, dataPacket);
+	return true;
+}
+
 bool GameServer::GetPeer(int peerIndex, int& peerId) const {
 	if (peerIndex < 0 || peerIndex >= m_connectedPeers.size())
 		return false;

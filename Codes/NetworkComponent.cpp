@@ -1,4 +1,5 @@
 #include "NetworkComponent.h"
+#include "NetworkManager.h"
 
 #include <Entity.h>
 
@@ -9,32 +10,88 @@ namespace ToolKit::ToolKitNetworking
 
 	TKDefineClass(NetworkComponent, Component);
 
-	void NetworkComponent::InitNetworkObject(ToolKit::Entity &entity, int id)
+	NetworkComponent::~NetworkComponent()
+	{
+		if (NetworkManager::Instance)
+		{
+			NetworkManager::Instance->UnregisterComponent(this);
+		}
+	}
+
+	void NetworkComponent::ParameterConstructor()
+	{
+		Component::ParameterConstructor();
+		if (NetworkManager::Instance)
+		{
+			NetworkManager::Instance->RegisterComponent(this);
+		}
+	}
+
+	void NetworkComponent::SetNetworkID(int id)
 	{
 		networkID = id;
-		this->entity = &entity;
 	}
 
-	bool NetworkComponent::ReadPacket(GamePacket &packet)
+	void NetworkComponent::Serialize(PacketStream& stream, bool fullState)
 	{
-		if (packet.type == NetworkMessage::DeltaState)
-			return ReadDeltaPacket((DeltaPacket &)packet);
+		if (fullState) {
+			stream.WriteInt(networkID);
 
-		if (packet.type == NetworkMessage::FullState)
-			return ReadFullPacket((FullPacket &)packet);
-	}
+			int sizeOffset = (int)stream.GetSize();
+			int placeholderSize = 0;
+			stream.WriteInt(placeholderSize);
 
-	bool NetworkComponent::WritePacket(GamePacket **packet, bool deltaFrame, int stateID)
-	{
-		if (deltaFrame)
-		{
-			if (!WriteDeltaPacket(packet, stateID))
-			{
-				return WriteFullPacket(packet);
+			auto entity = m_entity.lock();
+			if (entity && entity->m_node) {
+				Vec3 position = entity->m_node->GetTranslation();
+				stream.WriteFloat(position.x);
+				stream.WriteFloat(position.y);
+				stream.WriteFloat(position.z);
+
+				Quaternion rotation = entity->m_node->GetOrientation();
+				stream.WriteFloat(rotation.x);
+				stream.WriteFloat(rotation.y);
+				stream.WriteFloat(rotation.z);
+				stream.WriteFloat(rotation.w);
+
+				int currentSize = (int)stream.GetSize();
+				int dataSize = currentSize - sizeOffset - sizeof(int);
+				std::memcpy(stream.buffer.data() + sizeOffset, &dataSize, sizeof(int));
+
+				NetworkState state;
+				state.SetPosition(position);
+				state.SetOrientation(rotation);
+				lastFullState = state;
 			}
-			return true;
+			else {
+				int currentSize = (int)stream.GetSize();
+				int dataSize = currentSize - sizeOffset - sizeof(int);
+				std::memcpy(stream.buffer.data() + sizeOffset, &dataSize, sizeof(int));
+			}
 		}
-		return WriteFullPacket(packet);
+	}
+
+	void NetworkComponent::Deserialize(PacketStream& stream, bool fullState)
+	{
+		if (fullState) {
+			float positionX, positionY, positionZ;
+			stream.ReadFloat(positionX); stream.ReadFloat(positionY); stream.ReadFloat(positionZ);
+
+			float rotationX, rotationY, rotationZ, rotationW;
+			stream.ReadFloat(rotationX); stream.ReadFloat(rotationY); stream.ReadFloat(rotationZ); stream.ReadFloat(rotationW);
+
+			Vec3 position = Vec3(positionX, positionY, positionZ);
+			Quaternion rotation = Quaternion(rotationX, rotationY, rotationZ, rotationW);
+
+			auto entity = m_entity.lock();
+			if (entity && entity->m_node) {
+				entity->m_node->SetTranslation(position);
+				entity->m_node->SetOrientation(rotation);
+			}
+
+			lastFullState.SetPosition(position);
+			lastFullState.SetOrientation(rotation);
+		}
 	}
 
 	int NetworkComponent::GetNetworkID() const
@@ -48,7 +105,6 @@ namespace ToolKit::ToolKitNetworking
 		{
 			if ((*i).GetNetworkStateID() < minID)
 			{
-				// std::cout << "Removing State: " << i->stateID << "\n";
 				i = stateHistory.erase(i);
 			}
 			else
@@ -56,12 +112,12 @@ namespace ToolKit::ToolKitNetworking
 		}
 	}
 
-	NetworkState &NetworkComponent::GetLatestNetworkState()
+	NetworkState& NetworkComponent::GetLatestNetworkState()
 	{
 		return lastFullState;
 	}
 
-	void NetworkComponent::SetLatestNetworkState(ToolKitNetworking::NetworkState &lastState)
+	void NetworkComponent::SetLatestNetworkState(ToolKitNetworking::NetworkState& lastState)
 	{
 		lastFullState = lastState;
 		stateHistory.push_back(lastFullState);
@@ -75,111 +131,17 @@ namespace ToolKit::ToolKitNetworking
 		return nc;
 	}
 
-	bool NetworkComponent::GetNetworkState(int stateID, ToolKitNetworking::NetworkState &state)
+	bool NetworkComponent::GetNetworkState(int stateID, ToolKitNetworking::NetworkState& state)
 	{
-		// get a state ID from state history if needed
 		for (auto i = stateHistory.begin(); i < stateHistory.end(); ++i)
 		{
 			if (i->GetNetworkStateID() == stateID)
 			{
 				state = (*i);
-				// std::cout << "Successfully found network state.State ID: " << stateID << "\n";
 				return true;
 			}
 		}
-		// std::cout << "Couldn't find state for ID: " << stateID << ", stateHistorySize: " << stateHistory.size() << "\n";
+
 		return false;
-	}
-
-	bool NetworkComponent::ReadDeltaPacket(ToolKitNetworking::DeltaPacket &packet)
-	{
-		if (packet.fullID != lastFullState.GetNetworkStateID())
-			return false;
-		UpdateStateHistory(packet.fullID);
-
-		Vec3 fullPos = lastFullState.GetPosition();
-
-		Quaternion fullOrientation = lastFullState.GetOrientation();
-
-		fullPos.x += packet.position[0];
-		fullPos.y += packet.position[1];
-		fullPos.z += packet.position[2];
-
-		fullOrientation.x += ((float)packet.orientation[0]) / 127.0f;
-		fullOrientation.y += ((float)packet.orientation[1]) / 127.0f;
-		fullOrientation.z += ((float)packet.orientation[2]) / 127.0f;
-		fullOrientation.w += ((float)packet.orientation[3]) / 127.0f;
-
-		entity->m_node->SetTranslation(fullPos);
-		entity->m_node->SetOrientation(fullOrientation);
-
-		return true;
-	}
-
-	bool NetworkComponent::ReadFullPacket(ToolKitNetworking::FullPacket &packet)
-	{
-
-		if (packet.fullState.GetNetworkStateID() < lastFullState.GetNetworkStateID())
-		{
-			return false;
-		}
-
-		lastFullState = packet.fullState;
-
-		entity->m_node->SetTranslation(lastFullState.GetPosition());
-		entity->m_node->SetOrientation(lastFullState.GetOrientation());
-		stateHistory.emplace_back(lastFullState);
-
-		return true;
-	}
-
-	bool NetworkComponent::WriteDeltaPacket(GamePacket **packet, int stateID)
-	{
-		DeltaPacket *deltaPacket = new DeltaPacket();
-		NetworkState state;
-
-		// if we cant get network objects state we fail
-		if (!GetNetworkState(stateID, state))
-			return false;
-
-		// tells packet what state it is a delta of
-		deltaPacket->fullID = stateID;
-		deltaPacket->objectID = networkID;
-
-		Vec3 currentPos = entity->m_node->GetTranslation();
-		Quaternion currentOrientation = entity->m_node->GetOrientation();
-
-		// find difference between current game states orientation + position and the selected states orientation + position
-		currentPos -= state.GetPosition();
-		currentOrientation -= state.GetOrientation();
-
-		deltaPacket->position[0] = (char)currentPos.x;
-		deltaPacket->position[1] = (char)currentPos.y;
-		deltaPacket->position[2] = (char)currentPos.z;
-
-		deltaPacket->orientation[0] = (char)(currentOrientation.x * 127.0f);
-		deltaPacket->orientation[1] = (char)(currentOrientation.y * 127.0f);
-		deltaPacket->orientation[2] = (char)(currentOrientation.z * 127.0f);
-		deltaPacket->orientation[3] = (char)(currentOrientation.w * 127.0f);
-		*packet = deltaPacket;
-
-		return true;
-	}
-
-	bool NetworkComponent::WriteFullPacket(GamePacket **packet)
-	{
-		FullPacket *fullPacket = new FullPacket();
-
-		fullPacket->objectID = networkID;
-		fullPacket->fullState.SetPosition(entity->m_node->GetTranslation());
-		fullPacket->fullState.SetOrientation(entity->m_node->GetOrientation());
-
-		int lastID = lastFullState.GetNetworkStateID();
-		fullPacket->fullState.SetNetworkStateID(lastID++);
-
-		stateHistory.emplace_back(fullPacket->fullState);
-		*packet = fullPacket;
-
-		return true;
 	}
 }

@@ -1,5 +1,5 @@
 #pragma once
-#include <Types.h>
+#include <Component.h>
 
 namespace ToolKit::ToolKitNetworking {
 	class NetworkState {
