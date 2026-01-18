@@ -1,6 +1,6 @@
 <Settings>
-	<Plugin autoLoad="1" version="v1.0.0" engine="v0.4.6"/>
-	<Description name="ToolKitNetworking" brief="Template plugin project."/>
-	<Developer name="OtSoftware" web="otyazilim.com" email="info@otyazilim.com"/>
+	<Plugin version="v1.0.0" engine="v0.4.6"/>
+	<Description name="ToolKitNetworking" brief="Networking plugin for ToolKit game engine."/>
+	<Developer name="Eren Degirmenci" web="" email="erendegirmenci.354@gmail.com"/>
 </Settings>
 
