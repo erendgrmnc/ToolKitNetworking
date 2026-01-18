@@ -48,7 +48,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(const std::string
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
-	m_server = MakeNewPtr<GameServer>(NetworkBase::GetDefaultPort(), 2);
+	m_server = MakeNewPtr<GameServer>(port, 2);
 
 	m_server->RegisterPacketHandler(ToolKitNetworking::NetworkMessage::ClientConnected, this);
 
