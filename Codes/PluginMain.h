@@ -10,13 +10,10 @@
 #include <Plugin.h>
 #include <ToolKit.h>
 #include <enet/enet.h>
+#include "NetworkManager.h"
 
 namespace ToolKit
 {
-	namespace ToolKitNetworking {
-		class NetworkManager;
-	}
-
 	namespace Editor
 	{
 
@@ -36,7 +33,7 @@ namespace ToolKit
 			void OnStop() override;
 
 		protected:
-			ToolKitNetworking::NetworkManager* m_networkManager;
+			ToolKitNetworking::NetworkManagerPtr m_networkManager;
 		};
 
 	} // namespace Editor

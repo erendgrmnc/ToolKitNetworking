@@ -29,7 +29,7 @@ namespace ToolKit
 
 		void PluginMain::Frame(float deltaTime) {
 
-			if (m_networkManager) {
+			if (m_networkManager.get()) {
 				m_networkManager->Update(deltaTime);
 			}
 		}
@@ -53,7 +53,7 @@ namespace ToolKit
 
 			for (const auto& entity : entities) {
 				if (auto networkManager = entity->GetComponent<ToolKitNetworking::NetworkManager>()) {
-					m_networkManager = networkManager.get();
+					m_networkManager = networkManager;
 					TK_LOG("Network Manager found");
 				}
 			}
