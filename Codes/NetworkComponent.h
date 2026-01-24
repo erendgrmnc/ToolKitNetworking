@@ -1,6 +1,7 @@
 #pragma once
 #include <Component.h>
 #include <vector>
+#include <memory>
 #include "NetworkPackets.h"
 
 namespace ToolKit
@@ -30,12 +31,13 @@ namespace ToolKit
 
 			void SetNetworkID(int id);
 
-			virtual void Serialize(PacketStream& stream, bool fullState);
-			virtual void Deserialize(PacketStream& stream, bool fullState);
+			virtual void Serialize(PacketStream& stream, int baseTick);
+			virtual void Deserialize(PacketStream& stream, int baseTick);
 
 			void ParameterConstructor() override;
 
 			int GetNetworkID() const;
+			EntityPtr GetEntity() const { return m_entity.lock(); }
 			void UpdateStateHistory(int minID);
 
 			NetworkState& GetLatestNetworkState();

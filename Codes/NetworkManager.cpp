@@ -238,7 +238,6 @@ void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsServer(float deltaTime)
 				Vec3 pos = node->GetTranslation();
 				pos.x = offset; 
 				node->SetTranslation(pos);
-				node->Translate(Vec3(0, 0, 0)); // Hack to trigger dirty flag
 			}
 		}
 	}

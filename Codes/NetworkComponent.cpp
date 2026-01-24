@@ -2,6 +2,7 @@
 #include "NetworkManager.h"
 
 #include <Entity.h>
+#include <Node.h>
 
 #include "NetworkPackets.h"
 
@@ -32,66 +33,64 @@ namespace ToolKit::ToolKitNetworking
 		networkID = id;
 	}
 
-	void NetworkComponent::Serialize(PacketStream& stream, bool fullState)
+	void NetworkComponent::Serialize(PacketStream& stream, int baseTick)
 	{
-		if (fullState) {
-			stream.WriteInt(networkID);
+		stream.WriteInt(networkID);
 
-			int sizeOffset = (int)stream.GetSize();
-			int placeholderSize = 0;
-			stream.WriteInt(placeholderSize);
+		int sizeOffset = (int)stream.GetSize();
+		int placeholderSize = 0;
+		stream.WriteInt(placeholderSize);
 
-			auto entity = m_entity.lock();
-			if (entity && entity->m_node) {
-				Vec3 position = entity->m_node->GetTranslation();
-				stream.WriteFloat(position.x);
-				stream.WriteFloat(position.y);
-				stream.WriteFloat(position.z);
+		auto entity = m_entity.lock();
+		if (entity && entity->m_node) {
+			Vec3 currentPos = entity->m_node->GetTranslation();
+			Quaternion currentRot = entity->m_node->GetOrientation();
 
-				Quaternion rotation = entity->m_node->GetOrientation();
-				stream.WriteFloat(rotation.x);
-				stream.WriteFloat(rotation.y);
-				stream.WriteFloat(rotation.z);
-				stream.WriteFloat(rotation.w);
+			NetworkState baseState;
+			bool hasBase = (baseTick != -1) && GetNetworkState(baseTick, baseState);
 
-				int currentSize = (int)stream.GetSize();
-				int dataSize = currentSize - sizeOffset - sizeof(int);
-				std::memcpy(stream.buffer.data() + sizeOffset, &dataSize, sizeof(int));
+			PropertySerializer serializer(stream);
+			
+			bool posChanged = !hasBase || glm::distance(currentPos, baseState.GetPosition()) > 0.001f;
+			bool rotChanged = !hasBase || std::abs(1.0f - std::abs(glm::dot(currentRot, baseState.GetOrientation()))) > 0.0001f;
 
-				NetworkState state;
-				state.SetPosition(position);
-				state.SetOrientation(rotation);
-				lastFullState = state;
-			}
-			else {
-				int currentSize = (int)stream.GetSize();
-				int dataSize = currentSize - sizeOffset - sizeof(int);
-				std::memcpy(stream.buffer.data() + sizeOffset, &dataSize, sizeof(int));
-			}
+			serializer.Write(NetworkProperty::Position, currentPos, posChanged);
+			serializer.Write(NetworkProperty::Orientation, currentRot, rotChanged);
+
+			NetworkState state;
+			state.SetPosition(currentPos);
+			state.SetOrientation(currentRot);
+			state.SetNetworkStateID(NetworkManager::Instance->GetServerTick());
+			SetLatestNetworkState(state);
 		}
+
+		int currentSize = (int)stream.GetSize();
+		int dataSize = currentSize - sizeOffset - sizeof(int);
+		std::memcpy(stream.buffer.data() + sizeOffset, &dataSize, sizeof(int));
 	}
 
-	void NetworkComponent::Deserialize(PacketStream& stream, bool fullState)
+	void NetworkComponent::Deserialize(PacketStream& stream, int baseTick)
 	{
-		if (fullState) {
-			float positionX, positionY, positionZ;
-			stream.ReadFloat(positionX); stream.ReadFloat(positionY); stream.ReadFloat(positionZ);
+		NetworkState baseState;
+		bool hasBase = (baseTick != -1) && GetNetworkState(baseTick, baseState);
 
-			float rotationX, rotationY, rotationZ, rotationW;
-			stream.ReadFloat(rotationX); stream.ReadFloat(rotationY); stream.ReadFloat(rotationZ); stream.ReadFloat(rotationW);
+		PropertyDeserializer deserializer(stream);
+		
+		Vec3 finalPos;
+		deserializer.Read(NetworkProperty::Position, finalPos, hasBase ? baseState.GetPosition() : Vec3(0, 0, 0));
+		
+		Quaternion finalRot;
+		deserializer.Read(NetworkProperty::Orientation, finalRot, hasBase ? baseState.GetOrientation() : Quaternion());
 
-			Vec3 position = Vec3(positionX, positionY, positionZ);
-			Quaternion rotation = Quaternion(rotationX, rotationY, rotationZ, rotationW);
-
-			auto entity = m_entity.lock();
-			if (entity && entity->m_node) {
-				entity->m_node->SetTranslation(position);
-				entity->m_node->SetOrientation(rotation);
-			}
-
-			lastFullState.SetPosition(position);
-			lastFullState.SetOrientation(rotation);
+		auto entity = m_entity.lock();
+		if (entity && entity->m_node) {
+			entity->m_node->SetLocalTransforms(finalPos, finalRot, entity->m_node->GetScale());
 		}
+
+		lastFullState.SetPosition(finalPos);
+		lastFullState.SetOrientation(finalRot);
+		lastFullState.SetNetworkStateID(NetworkManager::Instance->GetServerTick());
+		stateHistory.push_back(lastFullState);
 	}
 
 	int NetworkComponent::GetNetworkID() const
