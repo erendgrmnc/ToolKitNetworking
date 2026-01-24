@@ -2,6 +2,7 @@
 #include <Component.h>
 #include "NetworkBase.h"
 #include "NetworkPackets.h"
+#include "NetworkMacros.h"
 #include <vector>
 #include <memory>
 #include <map>
@@ -10,6 +11,7 @@ namespace ToolKit::ToolKitNetworking {
 	class GameServer;
 	class GameClient;
 	class NetworkComponent;
+	enum class RPCReceiver;
 }
 
 namespace ToolKit::ToolKitNetworking {
@@ -24,7 +26,7 @@ namespace ToolKit::ToolKitNetworking {
 
 	static VariantCategory NetworkManagerCategory{ "NetworkManager", 100 };
 
-	class TK_PLUGIN_API NetworkManager : public ToolKit::Component, public PacketReceiver {
+	class TK_NET_API NetworkManager : public ToolKit::Component, public PacketReceiver {
 	public:
 
 		TKDeclareClass(NetworkManager, Component)
@@ -41,6 +43,10 @@ namespace ToolKit::ToolKitNetworking {
 		void Update(float deltaTime);
 
 		int GetServerTick() const;
+		bool IsServer() const;
+		int GetLocalPeerID() const;
+
+		void SendRPCPacket(PacketStream& rpcStream, RPCReceiver target, int ownerID);
 
 		ComponentPtr Copy(EntityPtr entityPtr) override;
 

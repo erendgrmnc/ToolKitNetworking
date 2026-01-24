@@ -11,7 +11,8 @@ namespace ToolKit::ToolKitNetworking {
 		Snapshot,
 		Shutdown,
 		ClientConnected,
-		SnapshotAck
+		SnapshotAck,
+		RPC
 	};
 
 	enum class NetworkProperty : unsigned char {
@@ -19,6 +20,7 @@ namespace ToolKit::ToolKitNetworking {
 		Position = 1 << 0,
 		Orientation = 1 << 1,
 		Scale = 1 << 2,
+		NetworkVariables = 1 << 3,
 		All = 0xFF
 	};
 
@@ -142,6 +144,10 @@ namespace ToolKit::ToolKitNetworking {
 			}
 		}
 
+		void MarkAsChanged(NetworkProperty prop) {
+			m_mask |= static_cast<unsigned char>(prop);
+		}
+
 	private:
 		PacketStream& m_stream;
 		int m_maskOffset;
@@ -162,6 +168,10 @@ namespace ToolKit::ToolKitNetworking {
 			else {
 				value = defaultValue;
 			}
+		}
+
+		bool Has(NetworkProperty prop) const {
+			return HasProperty(m_mask, prop);
 		}
 
 	private:

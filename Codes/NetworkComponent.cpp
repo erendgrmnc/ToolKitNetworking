@@ -1,15 +1,18 @@
 #include "NetworkComponent.h"
 #include "NetworkManager.h"
-
+#include "NetworkRPCRegistry.h"
 #include <Entity.h>
 #include <Node.h>
-
-#include "NetworkPackets.h"
+#include <algorithm>
 
 namespace ToolKit::ToolKitNetworking
 {
-
 	TKDefineClass(NetworkComponent, Component);
+
+	NetworkComponent::NetworkComponent()
+	{
+		m_ownerPeerID = -1; // Default to Server-owned
+	}
 
 	NetworkComponent::~NetworkComponent()
 	{
@@ -31,6 +34,32 @@ namespace ToolKit::ToolKitNetworking
 	void NetworkComponent::SetNetworkID(int id)
 	{
 		networkID = id;
+	}
+
+	int NetworkComponent::GetNetworkID() const
+	{
+		return networkID;
+	}
+
+	void NetworkComponent::SetOwnerID(int peerID)
+	{
+		m_ownerPeerID = peerID;
+	}
+
+	bool NetworkComponent::IsOwner() const
+	{
+		if (NetworkManager::Instance == nullptr) return false;
+		return NetworkManager::Instance->GetLocalPeerID() == m_ownerPeerID;
+	}
+
+	bool NetworkComponent::IsServer() const
+	{
+		return NetworkManager::Instance && NetworkManager::Instance->IsServer();
+	}
+
+	bool NetworkComponent::IsLocalPlayer() const
+	{
+		return IsOwner();
 	}
 
 	void NetworkComponent::Serialize(PacketStream& stream, int baseTick)
@@ -56,6 +85,24 @@ namespace ToolKit::ToolKitNetworking
 
 			serializer.Write(NetworkProperty::Position, currentPos, posChanged);
 			serializer.Write(NetworkProperty::Orientation, currentRot, rotChanged);
+
+			// Network Variables
+			bool anyVarDirty = false;
+			for (auto* var : m_networkVariables)
+			{
+				if (var->IsDirty()) { anyVarDirty = true; break; }
+			}
+
+			if (anyVarDirty || !hasBase)
+			{
+				serializer.MarkAsChanged(NetworkProperty::NetworkVariables);
+				stream.WriteInt((int)m_networkVariables.size());
+				for (auto* var : m_networkVariables)
+				{
+					var->Serialize(stream);
+					if (IsServer()) var->ResetDirty();
+				}
+			}
 
 			NetworkState state;
 			state.SetPosition(currentPos);
@@ -87,28 +134,57 @@ namespace ToolKit::ToolKitNetworking
 			entity->m_node->SetLocalTransforms(finalPos, finalRot, entity->m_node->GetScale());
 		}
 
+		// Network Variables
+		if (deserializer.Has(NetworkProperty::NetworkVariables))
+		{
+			int varCount = 0;
+			stream.ReadInt(varCount);
+			for (int i = 0; i < varCount && i < (int)m_networkVariables.size(); i++)
+			{
+				m_networkVariables[i]->Deserialize(stream);
+			}
+		}
+
 		lastFullState.SetPosition(finalPos);
 		lastFullState.SetOrientation(finalRot);
 		lastFullState.SetNetworkStateID(NetworkManager::Instance->GetServerTick());
 		stateHistory.push_back(lastFullState);
 	}
 
-	int NetworkComponent::GetNetworkID() const
+	void NetworkComponent::RegisterNetworkVariable(NetworkVariableBase* var)
 	{
-		return networkID;
+		m_networkVariables.push_back(var);
+	}
+
+	void NetworkComponent::RegisterRPC(const std::string& name, RPCFunction func)
+	{
+		m_rpcHandlers[CalculateHash(name)] = func;
+	}
+
+	void NetworkComponent::HandleRPC(uint32_t hash, PacketStream& stream)
+	{
+		// 1. Check local manual handlers
+		if (m_rpcHandlers.count(hash))
+		{
+			m_rpcHandlers[hash](stream);
+			return;
+		}
+
+		// 2. Check global registry for macro-defined RPCs
+		auto dispatcher = NetworkRPCRegistry::Instance().GetDispatcher(Class(), hash);
+		if (dispatcher)
+		{
+			dispatcher(this, stream);
+		}
 	}
 
 	void NetworkComponent::UpdateStateHistory(int minID)
 	{
-		for (auto i = stateHistory.begin(); i < stateHistory.end();)
-		{
-			if ((*i).GetNetworkStateID() < minID)
-			{
-				i = stateHistory.erase(i);
-			}
-			else
-				++i;
-		}
+		auto it = std::remove_if(stateHistory.begin(), stateHistory.end(),
+			[minID](const NetworkState& state) {
+				return state.GetNetworkStateID() < minID;
+			});
+		stateHistory.erase(it, stateHistory.end());
 	}
 
 	NetworkState& NetworkComponent::GetLatestNetworkState()
@@ -122,25 +198,32 @@ namespace ToolKit::ToolKitNetworking
 		stateHistory.push_back(lastFullState);
 	}
 
-	ComponentPtr NetworkComponent::Copy(EntityPtr ntt)
+	ComponentPtr NetworkComponent::Copy(EntityPtr entityPtr)
 	{
 		NetworkComponentPtr nc = MakeNewPtr<NetworkComponent>();
 		nc->m_localData = m_localData;
-		nc->m_entity = ntt;
+		nc->m_entity = entityPtr;
 		return nc;
 	}
 
 	bool NetworkComponent::GetNetworkState(int stateID, ToolKitNetworking::NetworkState& state)
 	{
-		for (auto i = stateHistory.begin(); i < stateHistory.end(); ++i)
+		for (auto& entry : stateHistory)
 		{
-			if (i->GetNetworkStateID() == stateID)
+			if (entry.GetNetworkStateID() == stateID)
 			{
-				state = (*i);
+				state = entry;
 				return true;
 			}
 		}
-
 		return false;
+	}
+
+	uint32_t NetworkComponent::CalculateHash(const std::string& name)
+	{
+		uint32_t hash = 5381;
+		for (char c : name)
+			hash = ((hash << 5) + hash) + c;
+		return hash;
 	}
 }

@@ -72,6 +72,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(const std::string
 			client->RegisterPacketHandler(NetworkMessage::Snapshot, this);
 			client->RegisterPacketHandler(NetworkMessage::ClientConnected, this);
 			client->RegisterPacketHandler(NetworkMessage::Shutdown, this);
+			client->RegisterPacketHandler(NetworkMessage::RPC, this);
 		}
 	}
 }
@@ -81,6 +82,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
 
 	m_server->RegisterPacketHandler(ToolKitNetworking::NetworkMessage::ClientConnected, this);
 	m_server->RegisterPacketHandler(ToolKitNetworking::NetworkMessage::SnapshotAck, this);
+	m_server->RegisterPacketHandler(ToolKitNetworking::NetworkMessage::RPC, this);
 
 	const std::string serverLogStr =
 		"Started as server on port " + std::to_string(port);
@@ -144,6 +146,25 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(int type, GamePac
 	else if (type == NetworkMessage::SnapshotAck) {
 		SnapshotAckPacket* ack = (SnapshotAckPacket*)payload;
 		m_peerLastAckedTick[source] = ack->ackTick;
+	}
+	else if (type == NetworkMessage::RPC) {
+		RPCPacket* packet = (RPCPacket*)payload;
+		
+		m_receiveStream.Clear();
+		m_receiveStream.Write((void*)payload, payload->GetTotalSize());
+		m_receiveStream.readOffset = sizeof(RPCPacket);
+
+		NetworkComponent* targetComponent = nullptr;
+		for (auto* nc : m_networkComponents) {
+			if (nc->GetNetworkID() == packet->networkID) {
+				targetComponent = nc;
+				break;
+			}
+		}
+
+		if (targetComponent) {
+			targetComponent->HandleRPC(packet->functionHash, m_receiveStream);
+		}
 	}
 }
 
@@ -222,24 +243,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsServer(float deltaTime)
 	
 	if (m_server)
 	{
-		m_server->UpdateServer(); // Tick increments inside here
-	}
-
-	// Move network objects right-left for testing
-	static float timer = 0.0f;
-	timer += deltaTime;
-	float speed = 0.1f;
-	float amplitude = 2.0f;
-	float offset = std::sin(timer * speed) * amplitude;
-
-	for (auto* networkComponent : m_networkComponents) {
-		if (auto entity = networkComponent->GetEntity()) {
-			if (auto node = entity->m_node) {
-				Vec3 pos = node->GetTranslation();
-				pos.x = offset; 
-				node->SetTranslation(pos);
-			}
-		}
+		m_server->UpdateServer(); 
 	}
 
 	BroadcastSnapshot();
@@ -252,6 +256,35 @@ void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsClient(float deltaTime)
 int ToolKit::ToolKitNetworking::NetworkManager::GetServerTick() const {
 	if (m_server) return m_server->GetServerTick();
 	return 0;
+}
+
+bool ToolKit::ToolKitNetworking::NetworkManager::IsServer() const {
+	return m_server != nullptr;
+}
+
+int ToolKit::ToolKitNetworking::NetworkManager::GetLocalPeerID() const {
+	if (IsServer()) return 0;
+	if (m_client) return m_client->GetPeerID();
+	return -1;
+}
+
+void ToolKit::ToolKitNetworking::NetworkManager::SendRPCPacket(PacketStream& rpcStream, RPCReceiver target, int ownerID) {
+	GamePacket* packet = reinterpret_cast<GamePacket*>(rpcStream.GetData());
+	if (IsServer()) {
+		if (target == RPCReceiver::All) {
+			m_server->SendGlobalPacket(*packet, true);
+		}
+		else if (target == RPCReceiver::Owner && ownerID != -1) {
+			m_server->SendPacketToPeer(ownerID, *packet, true);
+		}
+		else if (target == RPCReceiver::Others) {
+			// For each peer except source? But server is source here.
+			m_server->SendGlobalPacket(*packet, true);
+		}
+	}
+	else if (m_client) {
+		m_client->SendPacket(*packet, true);
+	}
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::UpdateMinimumState() {

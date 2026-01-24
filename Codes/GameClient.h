@@ -16,8 +16,6 @@ namespace ToolKit::ToolKitNetworking {
 
 		int GetPeerID() const;
 
-		const int GetClientLastFullID() const;
-		void SetClientLastFullID(const int clientLastFullID);
 
 		void SendPacket(GamePacket& payload, bool reliable = false);
 		void SendReliablePacket(GamePacket& payload) const;
@@ -30,7 +28,6 @@ namespace ToolKit::ToolKitNetworking {
 		bool m_isConnected;
 
 		int m_PeerId;
-		int m_clientSideLastFullID;
 
 		float m_timerSinceLastPacket;
 

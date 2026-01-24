@@ -72,7 +72,10 @@ set(HEADERS
     NetworkComponent.h
     GameServer.h
     GameClient.h
-    NetworkManager.h)
+    NetworkManager.h
+    NetworkRPCRegistry.h
+    NetworkVariable.h
+    NetworkMacros.h)
 ###############################
 # Project Source Files End.   #
 ###############################
@@ -108,7 +111,7 @@ target_link_directories(${PLUGIN_PROJECT_NAME} PRIVATE $<$<CONFIG:Debug>:${CMAKE
 target_link_directories(${PLUGIN_PROJECT_NAME} PRIVATE "${TK_DEPENDECY_OUT_DIR}")
 target_link_libraries(${PLUGIN_PROJECT_NAME} PRIVATE ${toolkit} ${imgui} ${editor})
 target_link_libraries(${PLUGIN_PROJECT_NAME} PRIVATE ${enet_lib} Ws2_32 Winmm)
-target_compile_definitions(${PLUGIN_PROJECT_NAME} PRIVATE TK_WITH_EDITOR TK_DLL_IMPORT)
+target_compile_definitions(${PLUGIN_PROJECT_NAME} PRIVATE TK_WITH_EDITOR TK_DLL_IMPORT TK_NET_EXPORT)
 
 # Set precompiled header files for the project.
 set(PCH
