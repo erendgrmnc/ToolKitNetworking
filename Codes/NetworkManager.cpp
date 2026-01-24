@@ -3,7 +3,10 @@
 #include "GameClient.h"
 #include "NetworkPackets.h"
 #include "NetworkComponent.h"
+#include <Entity.h>
+#include <Node.h>
 #include <algorithm>
+#include <cmath>
 
 
 #ifdef _WIN32
@@ -28,7 +31,7 @@ namespace ToolKit::ToolKitNetworking {
 ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
 	Instance = this;
 	m_server = nullptr;
-	m_serverTick = 0;
+	m_useDeltaCompression = true;
 
 	NetworkBase::Initialise();
 }
@@ -77,6 +80,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
 	m_server = MakeNewPtr<GameServer>(port, 2);
 
 	m_server->RegisterPacketHandler(ToolKitNetworking::NetworkMessage::ClientConnected, this);
+	m_server->RegisterPacketHandler(ToolKitNetworking::NetworkMessage::SnapshotAck, this);
 
 	const std::string serverLogStr =
 		"Started as server on port " + std::to_string(port);
@@ -105,6 +109,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(int type, GamePac
 		WorldSnapshotPacket* packet = (WorldSnapshotPacket*)payload;
 
 		int entityCount = packet->entityCount;
+		int baseTick = packet->baseTick;
 
 		for (int i = 0; i < entityCount; i++) {
 			int networkID = -1;
@@ -122,41 +127,83 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(int type, GamePac
 			}
 
 			if (targetComponent) {
-				targetComponent->Deserialize(m_receiveStream, true);
-				std::string logMsg = "Client received packet for object: " + std::to_string(networkID);
-				TK_LOG(logMsg.c_str());
+				targetComponent->Deserialize(m_receiveStream, baseTick);
 			}
 			else {
 				m_receiveStream.Skip(packetSize);
 			}
 		}
+
+		// Send Ack
+		if (m_client) {
+			SnapshotAckPacket ack;
+			ack.ackTick = packet->serverTick;
+			m_client->SendPacket(ack);
+		}
+	}
+	else if (type == NetworkMessage::SnapshotAck) {
+		SnapshotAckPacket* ack = (SnapshotAckPacket*)payload;
+		m_peerLastAckedTick[source] = ack->ackTick;
 	}
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::BroadcastSnapshot() {
 	if (!m_server) return;
 
+	int currentTick = m_server->GetServerTick();
+
+	if (!m_useDeltaCompression) {
+		m_sendStream.Clear();
+
+		WorldSnapshotPacket header;
+		header.type = NetworkMessage::Snapshot;
+		header.size = 0;
+		header.serverTick = currentTick;
+		header.baseTick = -1;
+		header.entityCount = (int)m_networkComponents.size();
+		m_sendStream.Write(header);
+
+		for (auto* networkComponent : m_networkComponents) {
+			networkComponent->Serialize(m_sendStream, -1);
+		}
+
+		size_t totalSize = m_sendStream.GetSize();
+		WorldSnapshotPacket* packetHeader = (WorldSnapshotPacket*)m_sendStream.GetData();
+		packetHeader->size = (short)(totalSize - sizeof(GamePacket));
+
+		m_server->SendGlobalPacket(*reinterpret_cast<GamePacket*>(m_sendStream.GetData()), false);
+	}
+	else {
+		for (int peerID : m_server->GetConnectedPeers()) {
+			int baseTick = -1;
+			if (m_peerLastAckedTick.count(peerID)) {
+				baseTick = m_peerLastAckedTick[peerID];
+			}
+			SendSnapshotToPeer(peerID, baseTick);
+		}
+	}
+}
+
+void ToolKit::ToolKitNetworking::NetworkManager::SendSnapshotToPeer(int peerID, int baseTick) {
 	m_sendStream.Clear();
 
 	WorldSnapshotPacket header;
 	header.type = NetworkMessage::Snapshot;
 	header.size = 0;
-	header.serverTick = m_serverTick;
+	header.serverTick = m_server->GetServerTick();
+	header.baseTick = baseTick;
 	header.entityCount = (int)m_networkComponents.size();
 	m_sendStream.Write(header);
 
 	for (auto* networkComponent : m_networkComponents) {
-		networkComponent->Serialize(m_sendStream, true);
-
-		std::string logMsg = "Packet sent for object: " + std::to_string(networkComponent->GetNetworkID());
-		TK_LOG(logMsg.c_str());
+		networkComponent->Serialize(m_sendStream, baseTick);
 	}
 
 	size_t totalSize = m_sendStream.GetSize();
 	WorldSnapshotPacket* packetHeader = (WorldSnapshotPacket*)m_sendStream.GetData();
 	packetHeader->size = (short)(totalSize - sizeof(GamePacket));
 
-	m_server->SendGlobalPacket(m_sendStream.GetData(), totalSize, false);
+	m_server->SendPacketToPeer(peerID, *reinterpret_cast<GamePacket*>(m_sendStream.GetData()), false); 
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::Update(float deltaTime)
@@ -172,15 +219,40 @@ void ToolKit::ToolKitNetworking::NetworkManager::Update(float deltaTime)
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsServer(float deltaTime) {
-	m_serverTick++;
+	
+	if (m_server)
+	{
+		m_server->UpdateServer(); // Tick increments inside here
+	}
+
+	// Move network objects right-left for testing
+	static float timer = 0.0f;
+	timer += deltaTime;
+	float speed = 0.1f;
+	float amplitude = 2.0f;
+	float offset = std::sin(timer * speed) * amplitude;
+
+	for (auto* networkComponent : m_networkComponents) {
+		if (auto entity = networkComponent->GetEntity()) {
+			if (auto node = entity->m_node) {
+				Vec3 pos = node->GetTranslation();
+				pos.x = offset; 
+				node->SetTranslation(pos);
+				node->Translate(Vec3(0, 0, 0)); // Hack to trigger dirty flag
+			}
+		}
+	}
+
 	BroadcastSnapshot();
-
-	m_server.get()->UpdateServer();
-
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsClient(float deltaTime) {
 	m_client.get()->UpdateClient();
+}
+
+int ToolKit::ToolKitNetworking::NetworkManager::GetServerTick() const {
+	if (m_server) return m_server->GetServerTick();
+	return 0;
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::UpdateMinimumState() {
@@ -190,6 +262,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::ParameterConstructor() {
 	Component::ParameterConstructor();
 
 	IsStartingAsServer_Define(m_isStartingAsServer, NetworkManagerCategory.Name, NetworkManagerCategory.Priority, true, true);
+	UseDeltaCompression_Define(m_useDeltaCompression, NetworkManagerCategory.Name, NetworkManagerCategory.Priority, true, true);
 }
 
 const char* ToolKit::ToolKitNetworking::NetworkManager::GetIPV4()

@@ -10,8 +10,25 @@ namespace ToolKit::ToolKitNetworking {
 		None,
 		Snapshot,
 		Shutdown,
-		ClientConnected
+		ClientConnected,
+		SnapshotAck
 	};
+
+	enum class NetworkProperty : unsigned char {
+		None = 0,
+		Position = 1 << 0,
+		Orientation = 1 << 1,
+		Scale = 1 << 2,
+		All = 0xFF
+	};
+
+	inline NetworkProperty operator|(NetworkProperty a, NetworkProperty b) {
+		return static_cast<NetworkProperty>(static_cast<unsigned char>(a) | static_cast<unsigned char>(b));
+	}
+
+	inline bool HasProperty(unsigned char mask, NetworkProperty prop) {
+		return (mask & static_cast<unsigned char>(prop)) != 0;
+	}
 
 	struct GamePacket {
 		short size;
@@ -31,14 +48,26 @@ namespace ToolKit::ToolKitNetworking {
 		}
 	};
 
+	struct SnapshotAckPacket : public GamePacket {
+		int ackTick;
+
+		SnapshotAckPacket() {
+			type = NetworkMessage::SnapshotAck;
+			size = sizeof(int);
+			ackTick = -1;
+		}
+	};
+
 	struct WorldSnapshotPacket : public GamePacket {
 		int serverTick;
+		int baseTick; // -1 for full state
 		int entityCount;
 
 		WorldSnapshotPacket() {
 			type = NetworkMessage::Snapshot;
 			size = 0;
 			serverTick = 0;
+			baseTick = -1;
 			entityCount = 0;
 		}
 	};
@@ -70,9 +99,9 @@ namespace ToolKit::ToolKitNetworking {
 
 		template<typename T>
 		bool Read(T& value) {
-			if (readOffset + sizeof(T) > buffer.size()) return false;
+			if (readOffset + (int)sizeof(T) > (int)buffer.size()) return false;
 			std::memcpy(&value, buffer.data() + readOffset, sizeof(T));
-			readOffset += sizeof(T);
+			readOffset += (int)sizeof(T);
 			return true;
 		}
 
@@ -90,7 +119,53 @@ namespace ToolKit::ToolKitNetworking {
 		size_t GetSize() const { return buffer.size(); }
 
 		void Skip(size_t size) {
-			readOffset += size;
+			readOffset += (int)size;
 		}
+	};
+
+	class PropertySerializer {
+	public:
+		PropertySerializer(PacketStream& stream) : m_stream(stream) {
+			m_maskOffset = (int)m_stream.GetSize();
+			m_stream.Write((unsigned char)0); // Placeholder for mask
+		}
+
+		~PropertySerializer() {
+			std::memcpy(m_stream.buffer.data() + m_maskOffset, &m_mask, sizeof(unsigned char));
+		}
+
+		template<typename T>
+		void Write(NetworkProperty prop, const T& value, bool changed) {
+			if (changed) {
+				m_mask |= static_cast<unsigned char>(prop);
+				m_stream.Write(value);
+			}
+		}
+
+	private:
+		PacketStream& m_stream;
+		int m_maskOffset;
+		unsigned char m_mask = 0;
+	};
+
+	class PropertyDeserializer {
+	public:
+		PropertyDeserializer(PacketStream& stream) : m_stream(stream) {
+			m_stream.Read(m_mask);
+		}
+
+		template<typename T>
+		void Read(NetworkProperty prop, T& value, const T& defaultValue) {
+			if (HasProperty(m_mask, prop)) {
+				m_stream.Read(value);
+			}
+			else {
+				value = defaultValue;
+			}
+		}
+
+	private:
+		PacketStream& m_stream;
+		unsigned char m_mask = 0;
 	};
 }
