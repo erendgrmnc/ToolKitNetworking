@@ -16,22 +16,28 @@ namespace ToolKit::ToolKitNetworking {
 		virtual void RemovePeer(int peerNumber);
 
 		bool SendGlobalReliablePacket(GamePacket& packet) const;
-		bool SendGlobalPacket(GamePacket& packet) const;
+		bool SendGlobalPacket(GamePacket& packet, bool reliable = false) const;
 		bool SendGlobalPacket(int messageID) const;
 		
-		// New raw send
-		bool SendGlobalPacket(const void* data, size_t size, bool reliable) const;
+		bool SendPacketToPeer(int peerID, GamePacket& packet, bool reliable = false) const;
 
 		bool GetPeer(int peerIndex, int& peerId) const;
+		int GetConnectedPeerCount() const { return (int)m_connectedPeers.size(); }
+		const std::vector<int>& GetConnectedPeers() const { return m_connectedPeers; }
 
 		std::string GetIpAddress() const;
 
 		virtual void UpdateServer();
 		void SetMaxClients(int maxClients);
+
+		int GetServerTick() const { return m_serverTick; }
+
 	protected:
 
 		int	port;
 		int	clientMax;
+
+		int m_serverTick = 0;
 
 		std::vector<int> m_connectedPeers;
 

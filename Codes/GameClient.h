@@ -19,7 +19,7 @@ namespace ToolKit::ToolKitNetworking {
 		const int GetClientLastFullID() const;
 		void SetClientLastFullID(const int clientLastFullID);
 
-		void SendPacket(GamePacket& payload);
+		void SendPacket(GamePacket& payload, bool reliable = false);
 		void SendReliablePacket(GamePacket& payload) const;
 		void Disconnect();
 		void AddOnClientConnected(const std::function<void()>& callback);

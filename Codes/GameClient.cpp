@@ -8,7 +8,6 @@ ToolKit::ToolKitNetworking::GameClient::GameClient()
 	m_timerSinceLastPacket = 0.f;
 	m_PeerId = -1;
 	m_isConnected = false;
-	m_clientSideLastFullID = -1;
 }
 
 ToolKit::ToolKitNetworking::GameClient::~GameClient()
@@ -18,7 +17,7 @@ ToolKit::ToolKitNetworking::GameClient::~GameClient()
 bool ToolKit::ToolKitNetworking::GameClient::Connect(const std::string& host, int portNum)
 {
 	ENetAddress address;
-	address.port = portNum;
+	address.port = (unsigned short)portNum;
 
 	if (enet_address_set_host(&address, host.c_str()) != 0)
 	{
@@ -67,7 +66,7 @@ bool ToolKit::ToolKitNetworking::GameClient::UpdateClient()
 
 bool ToolKit::ToolKitNetworking::GameClient::GetIsConnected() const
 {
-	return false;
+	return m_isConnected;
 }
 
 int ToolKit::ToolKitNetworking::GameClient::GetPeerID() const
@@ -75,25 +74,21 @@ int ToolKit::ToolKitNetworking::GameClient::GetPeerID() const
 	return m_PeerId;
 }
 
-const int ToolKit::ToolKitNetworking::GameClient::GetClientLastFullID() const
+void ToolKit::ToolKitNetworking::GameClient::SendPacket(GamePacket& payload, bool reliable)
 {
-	return m_clientSideLastFullID;
-}
-
-void ToolKit::ToolKitNetworking::GameClient::SetClientLastFullID(const int clientLastFullID)
-{
-	m_clientSideLastFullID = clientLastFullID;
-}
-
-void ToolKit::ToolKitNetworking::GameClient::SendPacket(GamePacket& payload)
-{
+	if (!m_netPeer) return;
 	int totalPacketSize = payload.GetTotalSize();
-	ENetPacket* dataPacket = enet_packet_create(&payload, totalPacketSize, 0);
+	enet_uint32 flags = reliable ? ENET_PACKET_FLAG_RELIABLE : 0;
+	ENetPacket* dataPacket = enet_packet_create(&payload, totalPacketSize, flags);
 	enet_peer_send(m_netPeer, 0, dataPacket);
 }
 
 void ToolKit::ToolKitNetworking::GameClient::SendReliablePacket(GamePacket& payload) const
 {
+	if (!m_netPeer) return;
+	int totalPacketSize = payload.GetTotalSize();
+	ENetPacket* dataPacket = enet_packet_create(&payload, totalPacketSize, ENET_PACKET_FLAG_RELIABLE);
+	enet_peer_send(m_netPeer, 0, dataPacket);
 }
 
 void ToolKit::ToolKitNetworking::GameClient::Disconnect()
@@ -107,6 +102,7 @@ void ToolKit::ToolKitNetworking::GameClient::Disconnect()
 
 void ToolKit::ToolKitNetworking::GameClient::AddOnClientConnected(const std::function<void()>& callback)
 {
+	m_onClientConnectedToServer.push_back(callback);
 }
 
 std::string ToolKit::ToolKitNetworking::GameClient::GetIPAddress()

@@ -9,6 +9,7 @@ GameServer::GameServer(int onPort, int maxClients) {
 	port = onPort;
 	clientMax = maxClients;
 	m_netHandle = nullptr;
+	m_serverTick = 0;
 	
 	Initialise();
 }
@@ -55,7 +56,7 @@ void GameServer::AddPeer(int peerNumber) {
 		}
 	}
 
-	if (m_connectedPeers.size() >= clientMax) {
+	if (m_connectedPeers.size() >= (size_t)clientMax) {
 		TK_LOG("Server: Max clients reached, cannot add peer.");
 		return;
 	}
@@ -71,36 +72,41 @@ void GameServer::RemovePeer(int peerNumber) {
 }
 
 bool GameServer::SendGlobalReliablePacket(GamePacket& packet) const {
-	if (!m_netHandle) return false;
-	ENetPacket* dataPacket = enet_packet_create(&packet, packet.GetTotalSize(), ENET_PACKET_FLAG_RELIABLE);
-	enet_host_broadcast(m_netHandle, 0, dataPacket);
-	return true;
+	return SendGlobalPacket(packet, true);
 }
 
-bool GameServer::SendGlobalPacket(GamePacket& packet) const {
+bool GameServer::SendGlobalPacket(GamePacket& packet, bool reliable) const {
 	if (!m_netHandle) return false;
-	ENetPacket* dataPacket = enet_packet_create(&packet, packet.GetTotalSize(), 0);
+	enet_uint32 flags = reliable ? ENET_PACKET_FLAG_RELIABLE : 0;
+	ENetPacket* dataPacket = enet_packet_create(&packet, packet.GetTotalSize(), flags);
 	enet_host_broadcast(m_netHandle, 0, dataPacket);
 	return true;
 }
 
 bool GameServer::SendGlobalPacket(int messageID) const {
 	GamePacket packet;
-	packet.type = messageID;
-	return SendGlobalPacket(packet);
+	packet.type = (short)messageID;
+	return SendGlobalPacket(packet, false);
 }
 
-bool GameServer::SendGlobalPacket(const void* data, size_t size, bool reliable) const {
+bool GameServer::SendPacketToPeer(int peerID, GamePacket& packet, bool reliable) const
+{
 	if (!m_netHandle) return false;
-	
-	enet_uint32 flags = reliable ? ENET_PACKET_FLAG_RELIABLE : 0;
-	ENetPacket* dataPacket = enet_packet_create(data, size, flags);
-	enet_host_broadcast(m_netHandle, 0, dataPacket);
-	return true;
+
+	for (size_t i = 0; i < m_netHandle->peerCount; ++i) {
+		ENetPeer* p = &m_netHandle->peers[i];
+		if (p->state == ENET_PEER_STATE_CONNECTED && (int)p->incomingPeerID + 1 == peerID) {
+			enet_uint32 flags = reliable ? ENET_PACKET_FLAG_RELIABLE : 0;
+			ENetPacket* dataPacket = enet_packet_create(&packet, packet.GetTotalSize(), flags);
+			enet_peer_send(p, 0, dataPacket);
+			return true;
+		}
+	}
+	return false;
 }
 
 bool GameServer::GetPeer(int peerIndex, int& peerId) const {
-	if (peerIndex < 0 || peerIndex >= m_connectedPeers.size())
+	if (peerIndex < 0 || peerIndex >= (int)m_connectedPeers.size())
 		return false;
 	
 	peerId = m_connectedPeers[peerIndex];
@@ -113,6 +119,8 @@ std::string GameServer::GetIpAddress() const {
 
 void GameServer::UpdateServer() {
 	if (!m_netHandle) { return; }
+
+	m_serverTick++;
 
 	ENetEvent event;
 	while (enet_host_service(m_netHandle, &event, 0) > 0) {
@@ -130,7 +138,7 @@ void GameServer::UpdateServer() {
 		}
 		else if (type == ENetEventType::ENET_EVENT_TYPE_RECEIVE) {
 			GamePacket* packet = reinterpret_cast<GamePacket*>(event.packet->data);
-			ProcessPacket(packet, peer);
+			ProcessPacket(packet, peer + 1);
 		}
 		enet_packet_destroy(event.packet);
 	}
