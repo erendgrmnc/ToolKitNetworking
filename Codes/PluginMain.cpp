@@ -10,7 +10,12 @@
 #include "NetworkComponent.h"
 #include "NetworkManager.h"
 #include "ToolKit/Scene.h"
+#include <vector>
+#include <string>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 ToolKit::Editor::PluginMain Self;
 
@@ -20,8 +25,57 @@ namespace ToolKit
 {
 	namespace Editor
 	{
+		// Helper to parse command line args
+		void ParseCommandLine(ToolKitNetworking::NetworkRole& role, std::string& ip, int& port)
+		{
+#ifdef _WIN32
+			LPSTR cmdLine = GetCommandLineA();
+			std::string cmd(cmdLine);
+#else
+			// Fallback or other platform implementation
+			std::string cmd = ""; 
+#endif
+			// Simple parsing
+			std::vector<std::string> args;
+			std::string current;
+			bool inQuotes = false;
+			for (char c : cmd) {
+				if (c == ' ' && !inQuotes) {
+					if (!current.empty()) {
+						args.push_back(current);
+						current.clear();
+					}
+				}
+				else if (c == '"') {
+					inQuotes = !inQuotes;
+				}
+				else {
+					current += c;
+				}
+			}
+			if (!current.empty()) args.push_back(current);
+
+			for (size_t i = 0; i < args.size(); ++i) {
+				if (args[i] == "-server" || args[i] == "-dedicated") {
+					role = ToolKitNetworking::NetworkRole::DedicatedServer;
+				}
+				else if (args[i] == "-host") {
+					role = ToolKitNetworking::NetworkRole::Host;
+				}
+				else if (args[i] == "-client") {
+					role = ToolKitNetworking::NetworkRole::Client;
+				}
+				else if (args[i] == "-ip" && i + 1 < args.size()) {
+					ip = args[i + 1];
+				}
+				else if (args[i] == "-port" && i + 1 < args.size()) {
+					port = std::stoi(args[i + 1]);
+				}
+			}
+		}
 
 		void PluginMain::Init(Main* master) {
+
 			Main::SetProxy(master);
 		}
 
@@ -65,20 +119,28 @@ namespace ToolKit
 
 			if (m_networkManager)
 			{
-				if (m_networkManager->GetIsStartingAsServerVal()) {
-					TK_LOG("Starting as server");
-					m_networkManager->StartAsServer(8080);
+				auto roleVar = m_networkManager->GetRoleVal();
+				auto role = roleVar.GetEnum<ToolKitNetworking::NetworkRole>();
+				std::string ip = "127.0.0.1";
+				int port = 8080;
+
+				ParseCommandLine(role, ip, port);
+
+				auto netRole = role;
+
+				if (netRole == ToolKitNetworking::NetworkRole::DedicatedServer || netRole == ToolKitNetworking::NetworkRole::Host) {
+					if (!m_networkManager->IsServer()) {
+						m_networkManager->StartAsServer(port);
+					}
 				}
 
-				else {
-					//TODO(erendegrmnc): pass ip address of the real host.
-					const std::string ipAddress = "127.0.0.1";
-					TK_LOG("Starting as client");
-					m_networkManager->StartAsClient(ipAddress, 8080);
+				if (netRole == ToolKitNetworking::NetworkRole::Client || netRole == ToolKitNetworking::NetworkRole::Host) {
+					m_networkManager->StartAsClient(ip, port);
 				}
-
 			}
 		}
+
+
 
 		void PluginMain::OnPause() {
 			TK_LOG("Network plugin onPause");

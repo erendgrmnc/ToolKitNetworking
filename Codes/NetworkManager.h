@@ -12,9 +12,30 @@ namespace ToolKit::ToolKitNetworking {
 	class GameClient;
 	class NetworkComponent;
 	enum class RPCReceiver;
-}
+		enum class NetworkRole {
+			None,
+			Client,
+			DedicatedServer,
+			Host
+		};
 
-namespace ToolKit::ToolKitNetworking {
+		enum class MovementPreset {
+			Competitive,
+			Smooth,
+			Vehicle,
+			Custom
+		};
+
+		struct NetworkSettings {
+			bool enableInterpolation = true;
+			bool enableExtrapolation = false;
+			bool enableLagCompensation = false;
+			float bufferTime = 0.1f; // 100ms
+		};
+	}
+
+	namespace ToolKit::ToolKitNetworking {
+
 
 
 	typedef std::shared_ptr<class NetworkManager> NetworkManagerPtr;
@@ -46,6 +67,10 @@ namespace ToolKit::ToolKitNetworking {
 		bool IsServer() const;
 		int GetLocalPeerID() const;
 
+		bool IsDedicatedServer() const;
+		bool IsHost() const;
+		bool IsClient() const;
+
 		void SendRPCPacket(PacketStream& rpcStream, RPCReceiver target, int ownerID);
 
 		ComponentPtr Copy(EntityPtr entityPtr) override;
@@ -53,8 +78,13 @@ namespace ToolKit::ToolKitNetworking {
 		void RegisterComponent(NetworkComponent* networkComponent);
 		void UnregisterComponent(NetworkComponent* networkComponent);
 
-		TKDeclareParam(bool, IsStartingAsServer)
+		TKDeclareParam(ToolKit::MultiChoiceVariant, Role)
 		TKDeclareParam(bool, UseDeltaCompression)
+		TKDeclareParam(ToolKit::MultiChoiceVariant, Preset)
+		TKDeclareParam(bool, EnableInterpolation)
+		TKDeclareParam(bool, EnableExtrapolation)
+		TKDeclareParam(bool, EnableLagCompensation)
+		TKDeclareParam(float, BufferTime)
 	protected:
 
 		void UpdateAsServer(float deltaTime);
@@ -72,8 +102,13 @@ namespace ToolKit::ToolKitNetworking {
 	protected:
 		std::map<int, int> stateIDs;
 
-		bool m_isStartingAsServer;
+		ToolKit::MultiChoiceVariant m_role;
 		bool m_useDeltaCompression;
+		ToolKit::MultiChoiceVariant m_preset;
+		bool m_enableInterpolation;
+		bool m_enableExtrapolation;
+		bool m_enableLagCompensation;
+		float m_bufferTime;
 
 		int m_packetsToSnapshot;
 		float m_timeToNextPacket;

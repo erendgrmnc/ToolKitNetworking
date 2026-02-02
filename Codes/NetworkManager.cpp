@@ -32,6 +32,30 @@ ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
 	Instance = this;
 	m_server = nullptr;
 	m_useDeltaCompression = true;
+	
+	ToolKit::MultiChoiceVariant roleVar;
+	{
+		ToolKit::ParameterVariant v((int)NetworkRole::None);
+		v.m_name = "None";
+		roleVar.Choices.push_back(v);
+	}
+	{
+		ToolKit::ParameterVariant v((int)NetworkRole::Client);
+		v.m_name = "Client";
+		roleVar.Choices.push_back(v);
+	}
+	{
+		ToolKit::ParameterVariant v((int)NetworkRole::DedicatedServer);
+		v.m_name = "DedicatedServer";
+		roleVar.Choices.push_back(v);
+	}
+	{
+		ToolKit::ParameterVariant v((int)NetworkRole::Host);
+		v.m_name = "Host";
+		roleVar.Choices.push_back(v);
+	}
+	roleVar.CurrentVal.Index = 0;
+	m_role = roleVar;
 
 	NetworkBase::Initialise();
 }
@@ -62,6 +86,12 @@ void ToolKit::ToolKitNetworking::NetworkManager::UnregisterComponent(NetworkComp
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(const std::string& host, int portNum) {
+	if (m_client) {
+		TK_LOG("Client already running. Stopping previous instance.");
+		m_client->Disconnect();
+		m_client = nullptr;
+	}
+
 	m_client = MakeNewPtr<GameClient>();
 
 
@@ -78,6 +108,12 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(const std::string
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
+	if (m_server) {
+		TK_LOG("Server already running. Stopping previous instance.");
+		m_server->Shutdown();
+		m_server = nullptr;
+	}
+
 	m_server = MakeNewPtr<GameServer>(port, 2);
 
 	m_server->RegisterPacketHandler(ToolKitNetworking::NetworkMessage::ClientConnected, this);
@@ -268,17 +304,36 @@ int ToolKit::ToolKitNetworking::NetworkManager::GetLocalPeerID() const {
 	return -1;
 }
 
+bool ToolKit::ToolKitNetworking::NetworkManager::IsDedicatedServer() const {
+	return m_role.GetEnum<NetworkRole>() == NetworkRole::DedicatedServer;
+}
+
+bool ToolKit::ToolKitNetworking::NetworkManager::IsHost() const {
+	return m_role.GetEnum<NetworkRole>() == NetworkRole::Host;
+}
+
+bool ToolKit::ToolKitNetworking::NetworkManager::IsClient() const {
+	return m_role.GetEnum<NetworkRole>() == NetworkRole::Client;
+}
+
 void ToolKit::ToolKitNetworking::NetworkManager::SendRPCPacket(PacketStream& rpcStream, RPCReceiver target, int ownerID) {
 	GamePacket* packet = reinterpret_cast<GamePacket*>(rpcStream.GetData());
 	if (IsServer()) {
-		if (target == RPCReceiver::All) {
+		if (target == RPCReceiver::Server) {
+			ReceivePacket(packet->type, packet, -1);
+		}
+		else if (target == RPCReceiver::All) {
 			m_server->SendGlobalPacket(*packet, true);
 		}
-		else if (target == RPCReceiver::Owner && ownerID != -1) {
-			m_server->SendPacketToPeer(ownerID, *packet, true);
+		else if (target == RPCReceiver::Owner) {
+			if (GetLocalPeerID() == ownerID) {
+				ReceivePacket(packet->type, packet, -1);
+			}
+			else if (ownerID != -1) {
+				m_server->SendPacketToPeer(ownerID, *packet, true);
+			}
 		}
 		else if (target == RPCReceiver::Others) {
-			// For each peer except source? But server is source here.
 			m_server->SendGlobalPacket(*packet, true);
 		}
 	}
@@ -293,7 +348,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::UpdateMinimumState() {
 void ToolKit::ToolKitNetworking::NetworkManager::ParameterConstructor() {
 	Component::ParameterConstructor();
 
-	IsStartingAsServer_Define(m_isStartingAsServer, NetworkManagerCategory.Name, NetworkManagerCategory.Priority, true, true);
+	Role_Define(m_role, NetworkManagerCategory.Name, NetworkManagerCategory.Priority, true, true);
 	UseDeltaCompression_Define(m_useDeltaCompression, NetworkManagerCategory.Name, NetworkManagerCategory.Priority, true, true);
 }
 
