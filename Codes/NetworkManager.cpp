@@ -159,15 +159,6 @@ void ToolKit::ToolKitNetworking::NetworkManager::Stop()
 		m_client->Disconnect(); // Retained original disconnect call
 		m_client = nullptr;
 	}
-
-	auto components = m_networkComponents; 
-	for (auto* comp : components)
-	{
-		if (comp && comp->GetEntity())
-		{
-			comp->GetEntity()->RemoveComponent(comp->Class());
-		}
-	}
 	m_networkComponents.clear();
 }
 
