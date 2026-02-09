@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.6)
+cmake_minimum_required(VERSION 3.14)
 
 # ToolKit App/Game CMake file.
 set(PLUGIN_PROJECT_NAME "ToolKitNetworking" CACHE STRING "What is the project name ?")
@@ -26,6 +26,17 @@ endif()
 # Create the project.
 project (${PLUGIN_PROJECT_NAME})
 
+include(FetchContent)
+
+# Fetch enet library
+FetchContent_Declare(
+    enet
+    GIT_REPOSITORY https://github.com/lsalzman/enet.git
+    GIT_TAG        v1.3.18
+    SOURCE_DIR     "${PLUGIN_CODE_DIR}/enet"
+)
+FetchContent_MakeAvailable(enet)
+
 if(CMAKE_BUILD_TYPE)
 	set(TK_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
 else()
@@ -47,8 +58,7 @@ include_directories(
     "${TOOLKIT_DIR}/Dependency/stb"
     "${TOOLKIT_DIR}/Dependency/minizip-ng/dist/include"
     "${TOOLKIT_DIR}/Dependency/tkimgui"
-    "${PLUGIN_CODE_DIR}"
-    "${PLUGIN_CODE_DIR}/enet/include")
+"${PLUGIN_CODE_DIR}")
 
 
 ###############################
@@ -62,7 +72,8 @@ set(SOURCE
     NetworkComponent.cpp
     GameServer.cpp
     GameClient.cpp
-    NetworkManager.cpp)
+    NetworkManager.cpp
+    NetworkSpawnService.cpp)
 
 set(HEADERS 
     PluginMain.h
@@ -75,7 +86,8 @@ set(HEADERS
     NetworkManager.h
     NetworkRPCRegistry.h
     NetworkVariable.h
-    NetworkMacros.h)
+    NetworkMacros.h
+    NetworkSpawnService.h)
 ###############################
 # Project Source Files End.   #
 ###############################
@@ -93,7 +105,6 @@ add_definitions(-DGLM_FORCE_INTRINSICS)
 set(toolkit "ToolKit$<$<CONFIG:Debug>:d>")
 set(imgui "imgui$<$<CONFIG:Debug>:d>")
 set(editor "Editor$<$<CONFIG:Debug>:d>")
-set(enet_lib "enet$<$<CONFIG:Debug>:d>")
 
 # Dependency library directories.
 set(TK_DEPENDECY_OUT_DIR "${TOOLKIT_DIR}/Dependency/Intermediate/${TK_PLATFORM}/${TK_BUILD_TYPE}")
@@ -107,10 +118,10 @@ set(CMAKE_DEBUG_POSTFIX d) # Only editor needs to know the postfix for loading c
 add_library(${PLUGIN_PROJECT_NAME} SHARED ${SOURCE} ${HEADERS}) # Plugin must be a dll.
 
 target_link_directories(${PLUGIN_PROJECT_NAME} PRIVATE "${TOOLKIT_DIR}/Bin")
-target_link_directories(${PLUGIN_PROJECT_NAME} PRIVATE $<$<CONFIG:Debug>:${CMAKE_CURRENT_LIST_DIR}/Intermediate/Plugin/enet/Debug> $<$<CONFIG:Release>:${CMAKE_CURRENT_LIST_DIR}/Intermediate/Plugin/enet/Release>)
 target_link_directories(${PLUGIN_PROJECT_NAME} PRIVATE "${TK_DEPENDECY_OUT_DIR}")
 target_link_libraries(${PLUGIN_PROJECT_NAME} PRIVATE ${toolkit} ${imgui} ${editor})
-target_link_libraries(${PLUGIN_PROJECT_NAME} PRIVATE ${enet_lib} Ws2_32 Winmm)
+target_link_libraries(${PLUGIN_PROJECT_NAME} PRIVATE enet Ws2_32 Winmm)
+target_include_directories(${PLUGIN_PROJECT_NAME} PRIVATE ${enet_SOURCE_DIR}/include)
 target_compile_definitions(${PLUGIN_PROJECT_NAME} PRIVATE TK_WITH_EDITOR TK_DLL_IMPORT TK_NET_EXPORT)
 
 # Set precompiled header files for the project.
@@ -148,10 +159,7 @@ if (MSVC)
 endif()
 
 #For hot reload rename the previous output.
-set(DLL $<SHELL_PATH:$<TARGET_FILE:${PLUGIN_PROJECT_NAME}>>)
-set(PDB $<SHELL_PATH:$<TARGET_PDB_FILE:${PLUGIN_PROJECT_NAME}>>)
+set(DLL $<TARGET_FILE:${PLUGIN_PROJECT_NAME}>)
+set(PDB $<TARGET_PDB_FILE:${PLUGIN_PROJECT_NAME}>)
 
-
-add_custom_command(TARGET ${PLUGIN_PROJECT_NAME} PRE_BUILD COMMAND ${CMAKE_COMMAND} -Ddll=${DLL} -Dpdb=${PDB} -Dtmp="${PLUGIN_BIN_DIR}/tmp" -P "${PLUGIN_CODE_DIR}/CMakeHotReload.cmake")
-
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/enet)
+add_custom_command(TARGET ${PLUGIN_PROJECT_NAME} PRE_BUILD COMMAND ${CMAKE_COMMAND} -Ddll="${DLL}" -Dpdb="${PDB}" -Dtmp="${PLUGIN_BIN_DIR}/tmp" -P "${PLUGIN_CODE_DIR}/CMakeHotReload.cmake")
