@@ -1,0 +1,15 @@
+# Check and move dll if it exists (simulating hot reload by freeing the lock)
+if(EXISTS "${dll}")
+    file(MAKE_DIRECTORY "${tmp}")
+    string(TIMESTAMP TIME "%Y%m%d_%H%M%S")
+    get_filename_component(NAME "${dll}" NAME)
+    # Rename/Move the locked file to a temp dir so the linker can write a new one
+    file(RENAME "${dll}" "${tmp}/${NAME}.${TIME}.old")
+endif()
+
+if(EXISTS "${pdb}")
+    file(MAKE_DIRECTORY "${tmp}")
+    string(TIMESTAMP TIME "%Y%m%d_%H%M%S")
+    get_filename_component(NAME "${pdb}" NAME)
+    file(RENAME "${pdb}" "${tmp}/${NAME}.${TIME}.old")
+endif()
