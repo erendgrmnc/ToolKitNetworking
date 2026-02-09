@@ -12,7 +12,10 @@ namespace ToolKit::ToolKitNetworking {
 		Shutdown,
 		ClientConnected,
 		SnapshotAck,
-		RPC
+		RPC,
+		Spawn,
+		Despawn,
+		ClientUpdate
 	};
 
 	enum class NetworkProperty : unsigned char {
@@ -71,6 +74,48 @@ namespace ToolKit::ToolKitNetworking {
 			serverTick = 0;
 			baseTick = -1;
 			entityCount = 0;
+		}
+	};
+
+	struct SpawnPacket : public GamePacket {
+		int networkID;
+		int ownerID;
+		float px, py, pz;
+		float rx, ry, rz, rw;
+		char className[64];
+
+		SpawnPacket() {
+			type = NetworkMessage::Spawn;
+			size = 0;
+			networkID = -1;
+			ownerID = -1;
+			px = py = pz = 0.0f;
+			rx = ry = rz = 0.0f; rw = 1.0f;
+			std::memset(className, 0, sizeof(className));
+		}
+	};
+
+	struct DespawnPacket : public GamePacket {
+		int networkID;
+
+		DespawnPacket() {
+			type = NetworkMessage::Despawn;
+			size = 0;
+			networkID = -1;
+		}
+	};
+
+	struct ClientUpdatePacket : public GamePacket {
+		int networkID;
+		float px, py, pz;
+		float rx, ry, rz, rw;
+
+		ClientUpdatePacket() {
+			type = NetworkMessage::ClientUpdate;
+			size = 0;
+			networkID = -1;
+			px = py = pz = 0.0f;
+			rx = ry = rz = 0.0f; rw = 1.0f;
 		}
 	};
 
