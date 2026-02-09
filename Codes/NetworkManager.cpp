@@ -3,8 +3,11 @@
 #include "GameClient.h"
 #include "NetworkPackets.h"
 #include "NetworkComponent.h"
+#include "NetworkSpawnService.h"
 #include <Entity.h>
 #include <Node.h>
+#include <ToolKit.h>
+#include <Scene.h>
 #include <algorithm>
 #include <cmath>
 
@@ -72,6 +75,17 @@ void ToolKit::ToolKitNetworking::NetworkManager::RegisterComponent(NetworkCompon
 	if (networkComponent->GetNetworkID() == -1) {
 		networkComponent->SetNetworkID(m_nextNetworkID++);
 	}
+
+	if (std::find(m_networkComponents.begin(), m_networkComponents.end(), networkComponent) != m_networkComponents.end())
+	{
+		return;
+	}
+
+	if (IsServer() && networkComponent->GetOwnerID() == -1)
+	{
+		networkComponent->SetOwnerID(0);
+	}
+
 	m_networkComponents.push_back(networkComponent);
 
 	std::string logMsg = "NetworkComponent Registered: ID " + std::to_string(networkComponent->GetNetworkID());
@@ -116,6 +130,14 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
 
 	m_server = MakeNewPtr<GameServer>(port, 2);
 
+	for (auto* networkComponent : m_networkComponents)
+	{
+		if (networkComponent->GetOwnerID() == -1)
+		{
+			networkComponent->SetOwnerID(0);
+		}
+	}
+
 	m_server->RegisterPacketHandler(ToolKitNetworking::NetworkMessage::ClientConnected, this);
 	m_server->RegisterPacketHandler(ToolKitNetworking::NetworkMessage::SnapshotAck, this);
 	m_server->RegisterPacketHandler(ToolKitNetworking::NetworkMessage::RPC, this);
@@ -123,16 +145,114 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
 	const std::string serverLogStr =
 		"Started as server on port " + std::to_string(port);
 	TK_LOG(serverLogStr.c_str());
+
+	// Spawn Server Player/Observer if needed or handle logic elsewhere
 }
 
-void ToolKit::ToolKitNetworking::NetworkManager::Stop() {
+void ToolKit::ToolKitNetworking::NetworkManager::Stop()
+{
 	if (m_server) {
-		m_server->Shutdown();
+		m_server->Shutdown(); // Retained original shutdown call
 		m_server = nullptr;
 	}
 	if (m_client) {
-		m_client->Disconnect();
+		m_client->Disconnect(); // Retained original disconnect call
 		m_client = nullptr;
+	}
+
+	auto components = m_networkComponents; 
+	for (auto* comp : components)
+	{
+		if (comp && comp->GetEntity())
+		{
+			comp->GetEntity()->RemoveComponent(comp->Class());
+		}
+	}
+	m_networkComponents.clear();
+}
+
+ToolKit::ToolKitNetworking::NetworkSpawnService& ToolKit::ToolKitNetworking::NetworkManager::GetSpawnService()
+{
+	return NetworkSpawnService::GetInstance();
+}
+
+ToolKit::ToolKitNetworking::NetworkComponent* ToolKit::ToolKitNetworking::NetworkManager::SpawnNetworkObject(const std::string& className, int ownerID, const Vec3& pos, const Quaternion& rot)
+{
+	NetworkComponent* netComp = GetSpawnService().Spawn(className);
+	if (!netComp)
+	{
+		TK_LOG(("NetworkManager: Failed to spawn - Class factory not found/failed for type: " + className).c_str());
+		return nullptr;
+	}
+
+	EntityPtr newEntity = std::make_shared<Entity>();
+	newEntity->AddComponent(ComponentPtr(netComp));
+
+	if (GetSceneManager()->GetCurrentScene()) {
+		GetSceneManager()->GetCurrentScene()->AddEntity(newEntity);
+	}
+
+	newEntity->m_node->SetTranslation(pos);
+	newEntity->m_node->SetOrientation(rot);
+
+	if (netComp->GetNetworkID() == -1)
+	{
+		netComp->SetNetworkID(m_nextNetworkID++);
+	}
+	netComp->SetOwnerID(ownerID);
+	netComp->OnNetworkSpawn();
+
+	if (IsServer())
+	{
+		SpawnPacket packet;
+		packet.networkID = netComp->GetNetworkID();
+		packet.ownerID = ownerID;
+		packet.px = pos.x; packet.py = pos.y; packet.pz = pos.z;
+		packet.rx = rot.x; packet.ry = rot.y; packet.rz = rot.z; packet.rw = rot.w;
+		strncpy(packet.className, className.c_str(), 63);
+
+		m_server->SendGlobalPacket(packet, true);
+	}
+
+	return netComp;
+}
+
+void ToolKit::ToolKitNetworking::NetworkManager::DespawnNetworkObject(NetworkComponent* component)
+{
+	if (!component) return;
+
+	int netID = component->GetNetworkID();
+
+	if (IsServer())
+	{
+		DespawnPacket packet;
+		packet.networkID = netID;
+		m_server->SendGlobalPacket(packet, true);
+	}
+
+	if (auto entity = component->GetEntity())
+	{
+		if (GetSceneManager()->GetCurrentScene()) {
+			GetSceneManager()->GetCurrentScene()->RemoveEntity(entity->GetIdVal());
+		}
+	}
+}
+
+void ToolKit::ToolKitNetworking::NetworkManager::SendClientUpdate(NetworkComponent* component)
+{
+	if (!component || !m_client) return;
+	
+	if (auto entity = component->GetEntity())
+	{
+		Vec3 pos = entity->m_node->GetTranslation();
+		Quaternion rot = entity->m_node->GetOrientation();
+
+		ClientUpdatePacket packet;
+		packet.networkID = component->GetNetworkID();
+		packet.px = pos.x; packet.py = pos.y; packet.pz = pos.z;
+		packet.rx = rot.x; packet.ry = rot.y; packet.rz = rot.z; packet.rw = rot.w;
+
+		m_client->SendPacket(packet, false); // Unreliable for frequent position updates
 	}
 }
 
@@ -182,6 +302,114 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(int type, GamePac
 	else if (type == NetworkMessage::SnapshotAck) {
 		SnapshotAckPacket* ack = (SnapshotAckPacket*)payload;
 		m_peerLastAckedTick[source] = ack->ackTick;
+	}
+// In ReceivePacket...
+	else if (type == NetworkMessage::ClientConnected) {
+		if (IsServer())
+		{
+			// Send all existing objects to the new client
+			for (auto* nc : m_networkComponents)
+			{
+				SpawnPacket msg;
+				msg.networkID = nc->GetNetworkID();
+				msg.ownerID = nc->GetOwnerID();
+				
+				if (nc->GetSpawnClassName().empty())
+				{
+					TK_LOG("Warning: Replicating object with no SpanwClassName!");
+					continue;
+				}
+				
+				strncpy(msg.className, nc->GetSpawnClassName().c_str(), 63);
+				
+				if (auto ent = nc->GetEntity()) {
+					Vec3 p = ent->m_node->GetTranslation();
+					Quaternion r = ent->m_node->GetOrientation();
+					msg.px = p.x; msg.py = p.y; msg.pz = p.z;
+					msg.rx = r.x; msg.ry = r.y; msg.rz = r.z; msg.rw = r.w;
+				}
+
+				m_server->SendPacketToPeer(source, msg, true);
+			}
+
+			std::string playerType;
+			if (m_playerSpawnType.CurrentVal.Index >= 0 && m_playerSpawnType.CurrentVal.Index < (int)m_playerSpawnType.Choices.size())
+			{
+				playerType = m_playerSpawnType.Choices[m_playerSpawnType.CurrentVal.Index].m_name;
+			}
+			
+			if (!playerType.empty())
+			{
+				SpawnNetworkObject(playerType, source, Vec3(0, 5, 0), Quaternion());
+			}
+			else
+			{
+				TK_LOG("NetworkManager: No PlayerSpawnType configured! New client will not have a player object.");
+			}
+		}
+	}
+	else if (type == NetworkMessage::Spawn) {
+		SpawnPacket* p = (SpawnPacket*)payload;
+		
+		bool exists = false;
+		for (auto* nc : m_networkComponents) {
+			if (nc->GetNetworkID() == p->networkID) { exists = true; break; }
+		}
+
+		if (!exists)
+		{
+			NetworkComponent* netComp = GetSpawnService().Spawn(p->className);
+
+			if (netComp)
+			{
+				EntityPtr ent = std::make_shared<Entity>();
+				ent->AddComponent(ComponentPtr(netComp));
+				if (GetSceneManager()->GetCurrentScene()) {
+					GetSceneManager()->GetCurrentScene()->AddEntity(ent);
+				}
+
+				// Force ID from server
+				netComp->SetNetworkID(p->networkID);
+				netComp->SetOwnerID(p->ownerID);
+
+				ent->m_node->SetTranslation(Vec3(p->px, p->py, p->pz));
+				ent->m_node->SetOrientation(Quaternion(p->rw, p->rx, p->ry, p->rz));
+				
+				netComp->OnNetworkSpawn();
+			}
+		}
+	}
+	else if (type == NetworkMessage::Despawn) {
+		DespawnPacket* p = (DespawnPacket*)payload;
+		for (auto* nc : m_networkComponents) {
+			if (nc->GetNetworkID() == p->networkID) {
+				// Destroy
+				if (auto ent = nc->GetEntity()) {
+					if (GetSceneManager()->GetCurrentScene()) {
+						GetSceneManager()->GetCurrentScene()->RemoveEntity(ent->GetIdVal());
+					}
+				}
+				break;
+			}
+		}
+	}
+	else if (type == NetworkMessage::ClientUpdate) {
+		if (IsServer())
+		{
+			ClientUpdatePacket* p = (ClientUpdatePacket*)payload;
+			NetworkComponent* target = nullptr;
+			for (auto* nc : m_networkComponents) {
+				if (nc->GetNetworkID() == p->networkID) { target = nc; break; }
+			}
+
+			if (target && target->GetOwnerID() == source)
+			{
+				if (auto ent = target->GetEntity()) {
+					ent->m_node->SetTranslation(Vec3(p->px, p->py, p->pz));
+					ent->m_node->SetOrientation(Quaternion(p->rw, p->rx, p->ry, p->rz));
+				}
+			}
+		}
 	}
 	else if (type == NetworkMessage::RPC) {
 		RPCPacket* packet = (RPCPacket*)payload;
@@ -287,6 +515,20 @@ void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsServer(float deltaTime)
 
 void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsClient(float deltaTime) {
 	m_client.get()->UpdateClient();
+	
+	static float updateTimer = 0.0f;
+	updateTimer += deltaTime;
+	if (updateTimer >= 0.05f)
+	{
+		updateTimer = 0.0f;
+		for (auto* nc : m_networkComponents)
+		{
+			if (nc->IsLocalPlayer())
+			{
+				SendClientUpdate(nc);
+			}
+		}
+	}
 }
 
 int ToolKit::ToolKitNetworking::NetworkManager::GetServerTick() const {
@@ -299,8 +541,10 @@ bool ToolKit::ToolKitNetworking::NetworkManager::IsServer() const {
 }
 
 int ToolKit::ToolKitNetworking::NetworkManager::GetLocalPeerID() const {
-	if (IsServer()) return 0;
-	if (m_client) return m_client->GetPeerID();
+	if (IsServer()) 
+		return 0;
+	if (m_client) 
+		return m_client->GetPeerID();
 	return -1;
 }
 
@@ -350,6 +594,20 @@ void ToolKit::ToolKitNetworking::NetworkManager::ParameterConstructor() {
 
 	Role_Define(m_role, NetworkManagerCategory.Name, NetworkManagerCategory.Priority, true, true);
 	UseDeltaCompression_Define(m_useDeltaCompression, NetworkManagerCategory.Name, NetworkManagerCategory.Priority, true, true);
+
+	m_playerSpawnType.Choices.clear();
+	for (auto& pair : GetSpawnService().GetFactories())
+	{
+		ToolKit::ParameterVariant v;
+		v.m_name = pair.first;
+		m_playerSpawnType.Choices.push_back(v);
+	}
+	if (m_playerSpawnType.Choices.size() > 0 && m_playerSpawnType.CurrentVal.Index == -1)
+	{
+		m_playerSpawnType.CurrentVal.Index = 0;
+	}
+
+	PlayerSpawnType_Define(m_playerSpawnType, NetworkManagerCategory.Name, NetworkManagerCategory.Priority, true, true);
 }
 
 const char* ToolKit::ToolKitNetworking::NetworkManager::GetIPV4()
@@ -358,7 +616,6 @@ const char* ToolKit::ToolKitNetworking::NetworkManager::GetIPV4()
 	ipBuffer[0] = '\0';
 
 #ifdef _WIN32
-	// Initialize Winsock once per process ideally
 	WSADATA wsaData;
 	WSAStartup(MAKEWORD(2, 2), &wsaData);
 
@@ -415,7 +672,6 @@ const char* ToolKit::ToolKitNetworking::NetworkManager::GetIPV4()
 	}
 #endif
 
-	// Fallback if no IP found
 	if (ipBuffer[0] == '\0')
 		strcpy(ipBuffer, "127.0.0.1");
 

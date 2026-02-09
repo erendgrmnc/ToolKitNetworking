@@ -130,11 +130,11 @@ namespace ToolKit::ToolKitNetworking
 		deserializer.Read(NetworkProperty::Orientation, finalRot, hasBase ? baseState.GetOrientation() : Quaternion());
 
 		auto entity = m_entity.lock();
-		if (entity && entity->m_node) {
+		if (entity && entity->m_node && !IsLocalPlayer()) {
 			entity->m_node->SetLocalTransforms(finalPos, finalRot, entity->m_node->GetScale());
 		}
 
-		// Network Variables
+		// Network Variablesa
 		if (deserializer.Has(NetworkProperty::NetworkVariables))
 		{
 			int varCount = 0;
@@ -225,5 +225,13 @@ namespace ToolKit::ToolKitNetworking
 		for (char c : name)
 			hash = ((hash << 5) + hash) + c;
 		return hash;
+	}
+
+	void NetworkComponent::SendRPCPacketInternal(PacketStream& stream, RPCReceiver target)
+	{
+		if (NetworkManager::Instance)
+		{
+			NetworkManager::Instance->SendRPCPacket(stream, target, m_ownerPeerID);
+		}
 	}
 }

@@ -1,16 +1,22 @@
 #pragma once
 #include <Component.h>
 #include "NetworkBase.h"
+#include "NetworkSpawnService.h"
+#include "NetworkComponent.h"
 #include "NetworkPackets.h"
 #include "NetworkMacros.h"
 #include <vector>
 #include <memory>
 #include <map>
+#include <unordered_map>
+#include <functional>
+#include <functional>
 
 namespace ToolKit::ToolKitNetworking {
 	class GameServer;
 	class GameClient;
 	class NetworkComponent;
+	class NetworkSpawnService; // Forward declaration
 	enum class RPCReceiver;
 		enum class NetworkRole {
 			None,
@@ -59,6 +65,20 @@ namespace ToolKit::ToolKitNetworking {
 		void StartAsClient(const std::string& host, int portNum);
 		void StartAsServer(uint16_t port);
 		void Stop();
+		
+	
+		static NetworkSpawnService& GetSpawnService();
+		
+		template<typename T>
+		static void RegisterSpawnFactory() 
+		{ 
+			GetSpawnService().Register<T>(); 
+		}
+		
+		NetworkComponent* SpawnNetworkObject(const std::string& className, int ownerID, const Vec3& pos, const Quaternion& rot);
+		void DespawnNetworkObject(NetworkComponent* component);
+
+		void SendClientUpdate(NetworkComponent* component);
 
 		void ReceivePacket(int type, GamePacket* payload, int source) override;
 		void Update(float deltaTime);
@@ -85,6 +105,7 @@ namespace ToolKit::ToolKitNetworking {
 		TKDeclareParam(bool, EnableExtrapolation)
 		TKDeclareParam(bool, EnableLagCompensation)
 		TKDeclareParam(float, BufferTime)
+		TKDeclareParam(ToolKit::MultiChoiceVariant, PlayerSpawnType)
 	protected:
 
 		void UpdateAsServer(float deltaTime);
@@ -119,9 +140,14 @@ namespace ToolKit::ToolKitNetworking {
 		
 		std::map<int, int> m_peerLastAckedTick;
 		std::vector<NetworkComponent*> m_networkComponents;
+		
+		ToolKit::MultiChoiceVariant m_playerSpawnType;
 	
 		PacketStream m_sendStream;
 		PacketStream m_receiveStream;
 
 	};
 }
+
+
+

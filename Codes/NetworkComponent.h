@@ -70,7 +70,7 @@ namespace ToolKit
 			bool IsServer() const;
 			bool IsLocalPlayer() const;
 
-			// Serialization
+			// SerializationT
 			virtual void Serialize(PacketStream& stream, int baseTick);
 			virtual void Deserialize(PacketStream& stream, int baseTick);
 
@@ -97,11 +97,16 @@ namespace ToolKit
 			NetworkState& GetLatestNetworkState();
 			void SetLatestNetworkState(ToolKitNetworking::NetworkState& lastState);
 
+			void SetSpawnClassName(const std::string& name) { m_spawnClassName = name; }
+			const std::string& GetSpawnClassName() const { return m_spawnClassName; }
+
 		protected:
 			bool GetNetworkState(int stateID, ToolKitNetworking::NetworkState& state);
 			uint32_t CalculateHash(const std::string& name);
+			void SendRPCPacketInternal(PacketStream& stream, RPCReceiver target);
 
 		protected:
+			std::string m_spawnClassName;
 			int networkID = -1;
 			int m_ownerPeerID = -1; // -1 for Server/No owner
 
@@ -114,15 +119,11 @@ namespace ToolKit
 	}
 }
 
-#include "NetworkManager.h"
-
 namespace ToolKit::ToolKitNetworking
 {
 	template<typename... Args>
 	void NetworkComponent::SendRPC(const std::string& name, RPCReceiver target, Args... args)
 	{
-		if (NetworkManager::Instance == nullptr) return;
-
 		PacketStream rpcStream;
 		RPCPacket header;
 		header.networkID = this->networkID;
@@ -138,6 +139,7 @@ namespace ToolKit::ToolKitNetworking
 		RPCPacket* packedHeader = (RPCPacket*)rpcStream.GetData();
 		packedHeader->size = (short)(rpcStream.GetSize() - sizeof(GamePacket));
 
-		NetworkManager::Instance->SendRPCPacket(rpcStream, target, this->m_ownerPeerID);
+		SendRPCPacketInternal(rpcStream, target);
 	}
 }
+
