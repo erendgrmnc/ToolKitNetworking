@@ -82,7 +82,7 @@ namespace ToolKit::ToolKitNetworking {
 		int ownerID;
 		float px, py, pz;
 		float rx, ry, rz, rw;
-		char className[64];
+		char className[128];
 
 		SpawnPacket() {
 			type = NetworkMessage::Spawn;

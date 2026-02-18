@@ -8,6 +8,7 @@
 #include <Node.h>
 #include <ToolKit.h>
 #include <Scene.h>
+#include <Prefab.h>
 #include <algorithm>
 #include <cmath>
 
@@ -59,6 +60,8 @@ ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
 	}
 	roleVar.CurrentVal.Index = 0;
 	m_role = roleVar;
+
+
 
 	NetworkBase::Initialise();
 }
@@ -167,20 +170,65 @@ ToolKit::ToolKitNetworking::NetworkSpawnService& ToolKit::ToolKitNetworking::Net
 	return NetworkSpawnService::GetInstance();
 }
 
-ToolKit::ToolKitNetworking::NetworkComponent* ToolKit::ToolKitNetworking::NetworkManager::SpawnNetworkObject(const std::string& className, int ownerID, const Vec3& pos, const Quaternion& rot)
+ToolKit::ToolKitNetworking::NetworkComponent* ToolKit::ToolKitNetworking::NetworkManager::InstantiateNetworkObject(const std::string& typeOrPath, EntityPtr& outEntity)
 {
-	NetworkComponent* netComp = GetSpawnService().Spawn(className);
-	if (!netComp)
+	// Try Factory first
+	NetworkComponent* netComp = GetSpawnService().Spawn(typeOrPath);
+	outEntity = nullptr;
+
+	if (netComp)
 	{
-		TK_LOG(("NetworkManager: Failed to spawn - Class factory not found/failed for type: " + className).c_str());
-		return nullptr;
+		outEntity = std::make_shared<Entity>();
+		outEntity->AddComponent(ComponentPtr(netComp));
+		if (GetSceneManager()->GetCurrentScene()) {
+			GetSceneManager()->GetCurrentScene()->AddEntity(outEntity);
+		}
+		return netComp;
 	}
 
-	EntityPtr newEntity = std::make_shared<Entity>();
-	newEntity->AddComponent(ComponentPtr(netComp));
+	// Try Prefab
+	PrefabPtr prefab = std::make_shared<Prefab>();
+	prefab->SetPrefabPathVal(typeOrPath);
+	prefab->Load();
 
+	prefab->Init(GetSceneManager()->GetCurrentScene());
+	prefab->Link();
 	if (GetSceneManager()->GetCurrentScene()) {
-		GetSceneManager()->GetCurrentScene()->AddEntity(newEntity);
+		GetSceneManager()->GetCurrentScene()->AddEntity(prefab);
+	}
+
+	// Find NetworkComponent in the instanced entities
+	for (EntityPtr child : prefab->GetInstancedEntities())
+	{
+		if (netComp = child.get()->GetComponent<ToolKit::ToolKitNetworking::NetworkComponent>().get())
+		{
+			break;
+		}
+	}
+
+	if (netComp)
+	{
+		outEntity = prefab;
+		return netComp;
+	}
+
+	// Failed
+	TK_LOG(("NetworkManager: InstantiateNetworkObject failed for: " + typeOrPath).c_str());
+	if (GetSceneManager()->GetCurrentScene()) {
+		GetSceneManager()->GetCurrentScene()->RemoveEntity(prefab->GetIdVal());
+	}
+	return nullptr;
+}
+
+ToolKit::ToolKitNetworking::NetworkComponent* ToolKit::ToolKitNetworking::NetworkManager::SpawnNetworkObject(const std::string& prefabName, int ownerID, const Vec3& pos, const Quaternion& rot)
+{
+	EntityPtr newEntity = nullptr;
+	NetworkComponent* netComp = InstantiateNetworkObject(prefabName, newEntity);
+
+	if (!netComp || !newEntity)
+	{
+		TK_LOG(("NetworkManager: Failed to spawn - Class factory not found/failed or Prefab invalid for type: " + prefabName).c_str());
+		return nullptr;
 	}
 
 	newEntity->m_node->SetTranslation(pos);
@@ -191,6 +239,12 @@ ToolKit::ToolKitNetworking::NetworkComponent* ToolKit::ToolKitNetworking::Networ
 		netComp->SetNetworkID(m_nextNetworkID++);
 	}
 	netComp->SetOwnerID(ownerID);
+	
+	if (netComp->GetSpawnClassName().empty())
+	{
+		netComp->SetSpawnClassName(prefabName);
+	}
+
 	netComp->OnNetworkSpawn();
 
 	if (IsServer())
@@ -200,7 +254,7 @@ ToolKit::ToolKitNetworking::NetworkComponent* ToolKit::ToolKitNetworking::Networ
 		packet.ownerID = ownerID;
 		packet.px = pos.x; packet.py = pos.y; packet.pz = pos.z;
 		packet.rx = rot.x; packet.ry = rot.y; packet.rz = rot.z; packet.rw = rot.w;
-		strncpy(packet.className, className.c_str(), 63);
+		strncpy(packet.className, prefabName.c_str(), 127);
 
 		m_server->SendGlobalPacket(packet, true);
 	}
@@ -311,7 +365,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(int type, GamePac
 					continue;
 				}
 				
-				strncpy(msg.className, nc->GetSpawnClassName().c_str(), 63);
+				strncpy(msg.className, nc->GetSpawnClassName().c_str(), 127);
 				
 				if (auto ent = nc->GetEntity()) {
 					Vec3 p = ent->m_node->GetTranslation();
@@ -323,19 +377,13 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(int type, GamePac
 				m_server->SendPacketToPeer(source, msg, true);
 			}
 
-			std::string playerType;
-			if (m_playerSpawnType.CurrentVal.Index >= 0 && m_playerSpawnType.CurrentVal.Index < (int)m_playerSpawnType.Choices.size())
+			if (m_playerPrefab)
 			{
-				playerType = m_playerSpawnType.Choices[m_playerSpawnType.CurrentVal.Index].m_name;
-			}
-			
-			if (!playerType.empty())
-			{
-				SpawnNetworkObject(playerType, source, Vec3(0, 5, 0), Quaternion());
+				SpawnNetworkObject(m_playerPrefab->GetFile(), source, Vec3(0, 5, 0), Quaternion());
 			}
 			else
 			{
-				TK_LOG("NetworkManager: No PlayerSpawnType configured! New client will not have a player object.");
+				TK_LOG("NetworkManager: No PlayerPrefab configured! New client will not have a player object.");
 			}
 		}
 	}
@@ -349,24 +397,25 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(int type, GamePac
 
 		if (!exists)
 		{
-			NetworkComponent* netComp = GetSpawnService().Spawn(p->className);
+			std::string className = p->className;
+			EntityPtr newEntity = nullptr;
+			NetworkComponent* netComp = InstantiateNetworkObject(className, newEntity);
 
-			if (netComp)
+			if (netComp && newEntity)
 			{
-				EntityPtr ent = std::make_shared<Entity>();
-				ent->AddComponent(ComponentPtr(netComp));
-				if (GetSceneManager()->GetCurrentScene()) {
-					GetSceneManager()->GetCurrentScene()->AddEntity(ent);
-				}
-
 				// Force ID from server
 				netComp->SetNetworkID(p->networkID);
 				netComp->SetOwnerID(p->ownerID);
+				netComp->SetSpawnClassName(className);
 
-				ent->m_node->SetTranslation(Vec3(p->px, p->py, p->pz));
-				ent->m_node->SetOrientation(Quaternion(p->rw, p->rx, p->ry, p->rz));
+				newEntity->m_node->SetTranslation(Vec3(p->px, p->py, p->pz));
+				newEntity->m_node->SetOrientation(Quaternion(p->rw, p->rx, p->ry, p->rz));
 				
 				netComp->OnNetworkSpawn();
+			}
+			else
+			{
+				TK_LOG(("NetworkManager: Client failed to spawn object: " + className).c_str());
 			}
 		}
 	}
@@ -586,19 +635,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::ParameterConstructor() {
 	Role_Define(m_role, NetworkManagerCategory.Name, NetworkManagerCategory.Priority, true, true);
 	UseDeltaCompression_Define(m_useDeltaCompression, NetworkManagerCategory.Name, NetworkManagerCategory.Priority, true, true);
 
-	m_playerSpawnType.Choices.clear();
-	for (auto& pair : GetSpawnService().GetFactories())
-	{
-		ToolKit::ParameterVariant v;
-		v.m_name = pair.first;
-		m_playerSpawnType.Choices.push_back(v);
-	}
-	if (m_playerSpawnType.Choices.size() > 0 && m_playerSpawnType.CurrentVal.Index == -1)
-	{
-		m_playerSpawnType.CurrentVal.Index = 0;
-	}
-
-	PlayerSpawnType_Define(m_playerSpawnType, NetworkManagerCategory.Name, NetworkManagerCategory.Priority, true, true);
+	PlayerPrefab_Define(m_playerPrefab, NetworkManagerCategory.Name, NetworkManagerCategory.Priority, true, true);
 }
 
 const char* ToolKit::ToolKitNetworking::NetworkManager::GetIPV4()

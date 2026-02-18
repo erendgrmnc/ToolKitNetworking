@@ -5,6 +5,7 @@
 #include "NetworkComponent.h"
 #include "NetworkPackets.h"
 #include "NetworkMacros.h"
+#include <Scene.h>
 #include <vector>
 #include <memory>
 #include <map>
@@ -53,7 +54,7 @@ namespace ToolKit::ToolKitNetworking {
 
 	static VariantCategory NetworkManagerCategory{ "NetworkManager", 100 };
 
-	class TK_NET_API NetworkManager : public ToolKit::Component, public PacketReceiver {
+	class TK_NET_API NetworkManager : public Component, public PacketReceiver {
 	public:
 
 		TKDeclareClass(NetworkManager, Component)
@@ -75,7 +76,7 @@ namespace ToolKit::ToolKitNetworking {
 			GetSpawnService().Register<T>(); 
 		}
 		
-		NetworkComponent* SpawnNetworkObject(const std::string& className, int ownerID, const Vec3& pos, const Quaternion& rot);
+		NetworkComponent* SpawnNetworkObject(const std::string& prefabName, int ownerID, const Vec3& pos, const Quaternion& rot);
 		void DespawnNetworkObject(NetworkComponent* component);
 
 		void SendClientUpdate(NetworkComponent* component);
@@ -98,14 +99,14 @@ namespace ToolKit::ToolKitNetworking {
 		void RegisterComponent(NetworkComponent* networkComponent);
 		void UnregisterComponent(NetworkComponent* networkComponent);
 
-		TKDeclareParam(ToolKit::MultiChoiceVariant, Role)
+		TKDeclareParam(MultiChoiceVariant, Role)
 		TKDeclareParam(bool, UseDeltaCompression)
-		TKDeclareParam(ToolKit::MultiChoiceVariant, Preset)
+		TKDeclareParam(MultiChoiceVariant, Preset)
 		TKDeclareParam(bool, EnableInterpolation)
 		TKDeclareParam(bool, EnableExtrapolation)
 		TKDeclareParam(bool, EnableLagCompensation)
 		TKDeclareParam(float, BufferTime)
-		TKDeclareParam(ToolKit::MultiChoiceVariant, PlayerSpawnType)
+		TKDeclareParam(ScenePtr, PlayerPrefab)
 	protected:
 
 		void UpdateAsServer(float deltaTime);
@@ -123,9 +124,11 @@ namespace ToolKit::ToolKitNetworking {
 	protected:
 		std::map<int, int> stateIDs;
 
-		ToolKit::MultiChoiceVariant m_role;
+		MultiChoiceVariant m_role;
+        // Internal helper to instantiate a network object from cache or prefab
+        NetworkComponent* InstantiateNetworkObject(const std::string& typeOrPath, EntityPtr& outEntity);
 		bool m_useDeltaCompression;
-		ToolKit::MultiChoiceVariant m_preset;
+		MultiChoiceVariant m_preset;
 		bool m_enableInterpolation;
 		bool m_enableExtrapolation;
 		bool m_enableLagCompensation;
@@ -141,13 +144,12 @@ namespace ToolKit::ToolKitNetworking {
 		std::map<int, int> m_peerLastAckedTick;
 		std::vector<NetworkComponent*> m_networkComponents;
 		
-		ToolKit::MultiChoiceVariant m_playerSpawnType;
+		ScenePtr m_playerPrefab;
 	
 		PacketStream m_sendStream;
 		PacketStream m_receiveStream;
 
 	};
-}
 
 
 
