@@ -86,7 +86,7 @@ namespace ToolKit::ToolKitNetworking {
 
 		SpawnPacket() {
 			type = NetworkMessage::Spawn;
-			size = 0;
+			size = sizeof(SpawnPacket) - sizeof(GamePacket);
 			networkID = -1;
 			ownerID = -1;
 			px = py = pz = 0.0f;
@@ -100,7 +100,7 @@ namespace ToolKit::ToolKitNetworking {
 
 		DespawnPacket() {
 			type = NetworkMessage::Despawn;
-			size = 0;
+			size = sizeof(DespawnPacket) - sizeof(GamePacket);
 			networkID = -1;
 		}
 	};
@@ -112,7 +112,7 @@ namespace ToolKit::ToolKitNetworking {
 
 		ClientUpdatePacket() {
 			type = NetworkMessage::ClientUpdate;
-			size = 0;
+			size = sizeof(ClientUpdatePacket) - sizeof(GamePacket);
 			networkID = -1;
 			px = py = pz = 0.0f;
 			rx = ry = rz = 0.0f; rw = 1.0f;

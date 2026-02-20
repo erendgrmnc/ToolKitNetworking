@@ -131,6 +131,10 @@ void GameServer::UpdateServer() {
 		if (type == ENetEventType::ENET_EVENT_TYPE_CONNECT) {
 			TK_LOG("Server: New client has connected");
 			AddPeer(peer + 1);
+			
+			GamePacket packet;
+			packet.type = NetworkMessage::ClientConnected;
+			ProcessPacket(&packet, peer + 1);
 		}
 		else if (type == ENetEventType::ENET_EVENT_TYPE_DISCONNECT) {
 			TK_LOG("Server: Client has disconnected");

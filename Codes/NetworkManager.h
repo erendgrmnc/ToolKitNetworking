@@ -1,11 +1,10 @@
 #pragma once
 #include <Component.h>
 #include "NetworkBase.h"
-#include "NetworkSpawnService.h"
 #include "NetworkComponent.h"
 #include "NetworkPackets.h"
 #include "NetworkMacros.h"
-#include <Scene.h>
+#include "NetworkSpawnService.h"
 #include <vector>
 #include <memory>
 #include <map>
@@ -19,31 +18,26 @@ namespace ToolKit::ToolKitNetworking {
 	class NetworkComponent;
 	class NetworkSpawnService; // Forward declaration
 	enum class RPCReceiver;
-		enum class NetworkRole {
-			None,
-			Client,
-			DedicatedServer,
-			Host
-		};
+	enum class NetworkRole {
+		None,
+		Client,
+		DedicatedServer,
+		Host
+	};
 
-		enum class MovementPreset {
-			Competitive,
-			Smooth,
-			Vehicle,
-			Custom
-		};
+	enum class MovementPreset {
+		Competitive,
+		Smooth,
+		Vehicle,
+		Custom
+	};
 
-		struct NetworkSettings {
-			bool enableInterpolation = true;
-			bool enableExtrapolation = false;
-			bool enableLagCompensation = false;
-			float bufferTime = 0.1f; // 100ms
-		};
-	}
-
-	namespace ToolKit::ToolKitNetworking {
-
-
+	struct NetworkSettings {
+		bool enableInterpolation = true;
+		bool enableExtrapolation = false;
+		bool enableLagCompensation = false;
+		float bufferTime = 0.1f; // 100ms
+	};
 
 	typedef std::shared_ptr<class NetworkManager> NetworkManagerPtr;
 	typedef std::vector<NetworkManagerPtr> NetworkManagerPtrArray;
@@ -66,16 +60,16 @@ namespace ToolKit::ToolKitNetworking {
 		void StartAsClient(const std::string& host, int portNum);
 		void StartAsServer(uint16_t port);
 		void Stop();
-		
-	
+
+
 		static NetworkSpawnService& GetSpawnService();
-		
+
 		template<typename T>
-		static void RegisterSpawnFactory() 
-		{ 
-			GetSpawnService().Register<T>(); 
+		static void RegisterSpawnFactory()
+		{
+			GetSpawnService().Register<T>();
 		}
-		
+
 		NetworkComponent* SpawnNetworkObject(const std::string& prefabName, int ownerID, const Vec3& pos, const Quaternion& rot);
 		void DespawnNetworkObject(NetworkComponent* component);
 
@@ -100,13 +94,13 @@ namespace ToolKit::ToolKitNetworking {
 		void UnregisterComponent(NetworkComponent* networkComponent);
 
 		TKDeclareParam(MultiChoiceVariant, Role)
-		TKDeclareParam(bool, UseDeltaCompression)
-		TKDeclareParam(MultiChoiceVariant, Preset)
-		TKDeclareParam(bool, EnableInterpolation)
-		TKDeclareParam(bool, EnableExtrapolation)
-		TKDeclareParam(bool, EnableLagCompensation)
-		TKDeclareParam(float, BufferTime)
-		TKDeclareParam(ScenePtr, PlayerPrefab)
+			TKDeclareParam(bool, UseDeltaCompression)
+			TKDeclareParam(MultiChoiceVariant, Preset)
+			TKDeclareParam(bool, EnableInterpolation)
+			TKDeclareParam(bool, EnableExtrapolation)
+			TKDeclareParam(bool, EnableLagCompensation)
+			TKDeclareParam(float, BufferTime)
+			TKDeclareParam(::ToolKit::PrefabPtr, PlayerPrefab)
 	protected:
 
 		void UpdateAsServer(float deltaTime);
@@ -125,8 +119,8 @@ namespace ToolKit::ToolKitNetworking {
 		std::map<int, int> stateIDs;
 
 		MultiChoiceVariant m_role;
-        // Internal helper to instantiate a network object from cache or prefab
-        NetworkComponent* InstantiateNetworkObject(const std::string& typeOrPath, EntityPtr& outEntity);
+		// Internal helper to instantiate a network object from cache or prefab
+		NetworkComponent* InstantiateNetworkObject(const std::string& typeOrPath, EntityPtr& outEntity);
 		bool m_useDeltaCompression;
 		MultiChoiceVariant m_preset;
 		bool m_enableInterpolation;
@@ -140,16 +134,14 @@ namespace ToolKit::ToolKitNetworking {
 
 		GameServerPtr m_server;
 		GameClientPtr m_client;
-		
+
 		std::map<int, int> m_peerLastAckedTick;
 		std::vector<NetworkComponent*> m_networkComponents;
-		
-		ScenePtr m_playerPrefab;
-	
+
+		PrefabPtr m_playerPrefab;
+
 		PacketStream m_sendStream;
 		PacketStream m_receiveStream;
 
 	};
-
-
-
+} // namespace ToolKit::ToolKitNetworking
