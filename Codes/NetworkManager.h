@@ -1,147 +1,132 @@
 #pragma once
-#include <Component.h>
 #include "NetworkBase.h"
 #include "NetworkComponent.h"
-#include "NetworkPackets.h"
 #include "NetworkMacros.h"
+#include "NetworkPackets.h"
 #include "NetworkSpawnService.h"
-#include <vector>
-#include <memory>
+#include <Component.h>
+#include <functional>
 #include <map>
+#include <memory>
 #include <unordered_map>
-#include <functional>
-#include <functional>
+#include <vector>
+
 
 namespace ToolKit::ToolKitNetworking {
-	class GameServer;
-	class GameClient;
-	class NetworkComponent;
-	class NetworkSpawnService; // Forward declaration
-	enum class RPCReceiver;
-	enum class NetworkRole {
-		None,
-		Client,
-		DedicatedServer,
-		Host
-	};
+class GameServer;
+class GameClient;
+class NetworkComponent;
+class NetworkSpawnService; // Forward declaration
+enum class RPCReceiver;
+enum class NetworkRole { None, Client, DedicatedServer, Host };
 
-	enum class MovementPreset {
-		Competitive,
-		Smooth,
-		Vehicle,
-		Custom
-	};
+enum class MovementPreset { Competitive, Smooth, Vehicle, Custom };
 
-	struct NetworkSettings {
-		bool enableInterpolation = true;
-		bool enableExtrapolation = false;
-		bool enableLagCompensation = false;
-		float bufferTime = 0.1f; // 100ms
-	};
+struct NetworkSettings {
+  bool enableInterpolation = true;
+  bool enableExtrapolation = false;
+  bool enableLagCompensation = false;
+  float bufferTime = 0.1f; // 100ms
+};
 
-	typedef std::shared_ptr<class NetworkManager> NetworkManagerPtr;
-	typedef std::vector<NetworkManagerPtr> NetworkManagerPtrArray;
+typedef std::shared_ptr<class NetworkManager> NetworkManagerPtr;
+typedef std::vector<NetworkManagerPtr> NetworkManagerPtrArray;
 
-	typedef std::shared_ptr<class GameClient> GameClientPtr;
-	typedef std::shared_ptr<class GameServer> GameServerPtr;
+typedef std::shared_ptr<class GameClient> GameClientPtr;
+typedef std::shared_ptr<class GameServer> GameServerPtr;
 
+static VariantCategory NetworkManagerCategory{"NetworkManager", 100};
 
-	static VariantCategory NetworkManagerCategory{ "NetworkManager", 100 };
+class TK_NET_API NetworkManager : public Component, public PacketReceiver {
+public:
+  TKDeclareClass(NetworkManager, Component) NetworkManager();
+  virtual ~NetworkManager();
 
-	class TK_NET_API NetworkManager : public Component, public PacketReceiver {
-	public:
+  static NetworkManager *Instance;
 
-		TKDeclareClass(NetworkManager, Component)
-			NetworkManager();
-		virtual ~NetworkManager();
+  void StartAsClient(const std::string &host, int portNum);
+  void StartAsServer(uint16_t port);
+  void Stop();
 
-		static NetworkManager* Instance;
+  static NetworkSpawnService &GetSpawnService();
 
-		void StartAsClient(const std::string& host, int portNum);
-		void StartAsServer(uint16_t port);
-		void Stop();
+  template <typename T> static void RegisterSpawnFactory() {
+    GetSpawnService().Register<T>();
+  }
 
+  NetworkComponent *SpawnNetworkObject(const std::string &prefabName,
+                                       int ownerID, const Vec3 &pos,
+                                       const Quaternion &rot);
+  void DespawnNetworkObject(NetworkComponent *component);
 
-		static NetworkSpawnService& GetSpawnService();
+  void SendClientUpdate(NetworkComponent *component);
 
-		template<typename T>
-		static void RegisterSpawnFactory()
-		{
-			GetSpawnService().Register<T>();
-		}
+  void ReceivePacket(int type, GamePacket *payload, int source) override;
+  void Update(float deltaTime);
 
-		NetworkComponent* SpawnNetworkObject(const std::string& prefabName, int ownerID, const Vec3& pos, const Quaternion& rot);
-		void DespawnNetworkObject(NetworkComponent* component);
+  int GetServerTick() const;
+  bool IsServer() const;
+  int GetLocalPeerID() const;
 
-		void SendClientUpdate(NetworkComponent* component);
+  bool IsDedicatedServer() const;
+  bool IsHost() const;
+  bool IsClient() const;
 
-		void ReceivePacket(int type, GamePacket* payload, int source) override;
-		void Update(float deltaTime);
+  void SendRPCPacket(PacketStream &rpcStream, RPCReceiver target, int ownerID);
 
-		int GetServerTick() const;
-		bool IsServer() const;
-		int GetLocalPeerID() const;
+  ComponentPtr Copy(EntityPtr entityPtr) override;
 
-		bool IsDedicatedServer() const;
-		bool IsHost() const;
-		bool IsClient() const;
+  void RegisterComponent(NetworkComponent *networkComponent);
+  void UnregisterComponent(NetworkComponent *networkComponent);
 
-		void SendRPCPacket(PacketStream& rpcStream, RPCReceiver target, int ownerID);
+TKDeclareParam(MultiChoiceVariant, Role)
+    TKDeclareParam(bool, UseDeltaCompression)
+        TKDeclareParam(MultiChoiceVariant, Preset)
+            TKDeclareParam(bool, EnableInterpolation)
+                TKDeclareParam(bool, EnableExtrapolation)
+                    TKDeclareParam(bool, EnableLagCompensation)
+                        TKDeclareParam(float, BufferTime)
+                            TKDeclareParam(::ToolKit::ScenePtr,
+                                           PlayerPrefab) protected :
 
-		ComponentPtr Copy(EntityPtr entityPtr) override;
+    void UpdateAsServer(float deltaTime);
+  void UpdateAsClient(float deltaTime);
 
-		void RegisterComponent(NetworkComponent* networkComponent);
-		void UnregisterComponent(NetworkComponent* networkComponent);
+  void BroadcastSnapshot();
+  void SendSnapshotToPeer(int peerID, int baseTick);
+  void UpdateMinimumState();
 
-		TKDeclareParam(MultiChoiceVariant, Role)
-			TKDeclareParam(bool, UseDeltaCompression)
-			TKDeclareParam(MultiChoiceVariant, Preset)
-			TKDeclareParam(bool, EnableInterpolation)
-			TKDeclareParam(bool, EnableExtrapolation)
-			TKDeclareParam(bool, EnableLagCompensation)
-			TKDeclareParam(float, BufferTime)
-			TKDeclareParam(::ToolKit::PrefabPtr, PlayerPrefab)
-	protected:
+  void ParameterConstructor() override;
 
-		void UpdateAsServer(float deltaTime);
-		void UpdateAsClient(float deltaTime);
+  const char *GetIPV4();
 
-		void BroadcastSnapshot();
-		void SendSnapshotToPeer(int peerID, int baseTick);
-		void UpdateMinimumState();
+protected:
+  std::map<int, int> stateIDs;
 
-		void ParameterConstructor() override;
+  MultiChoiceVariant m_role;
+  // Internal helper to instantiate a network object from cache or prefab
+  NetworkComponent *InstantiateNetworkObject(const std::string &typeOrPath,
+                                             EntityPtr &outEntity);
+  bool m_useDeltaCompression;
+  MultiChoiceVariant m_preset;
+  bool m_enableInterpolation;
+  bool m_enableExtrapolation;
+  bool m_enableLagCompensation;
+  float m_bufferTime;
 
-		const char* GetIPV4();
+  int m_packetsToSnapshot;
+  float m_timeToNextPacket;
+  int m_nextNetworkID = 1;
 
+  GameServerPtr m_server;
+  GameClientPtr m_client;
 
-	protected:
-		std::map<int, int> stateIDs;
+  std::map<int, int> m_peerLastAckedTick;
+  std::vector<NetworkComponent *> m_networkComponents;
 
-		MultiChoiceVariant m_role;
-		// Internal helper to instantiate a network object from cache or prefab
-		NetworkComponent* InstantiateNetworkObject(const std::string& typeOrPath, EntityPtr& outEntity);
-		bool m_useDeltaCompression;
-		MultiChoiceVariant m_preset;
-		bool m_enableInterpolation;
-		bool m_enableExtrapolation;
-		bool m_enableLagCompensation;
-		float m_bufferTime;
+  ScenePtr m_playerPrefab;
 
-		int m_packetsToSnapshot;
-		float m_timeToNextPacket;
-		int m_nextNetworkID = 1;
-
-		GameServerPtr m_server;
-		GameClientPtr m_client;
-
-		std::map<int, int> m_peerLastAckedTick;
-		std::vector<NetworkComponent*> m_networkComponents;
-
-		PrefabPtr m_playerPrefab;
-
-		PacketStream m_sendStream;
-		PacketStream m_receiveStream;
-
-	};
+  PacketStream m_sendStream;
+  PacketStream m_receiveStream;
+};
 } // namespace ToolKit::ToolKitNetworking

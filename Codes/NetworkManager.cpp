@@ -393,7 +393,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(
       }
 
       if (GetPlayerPrefabVal()) {
-        SpawnNetworkObject(GetPlayerPrefabVal()->GetPrefabPathVal(), source,
+        SpawnNetworkObject(GetPlayerPrefabVal()->GetFile(), source,
                            Vec3(0, 5, 0), Quaternion());
       } else {
         TK_LOG("NetworkManager: No PlayerPrefab configured! New client will "
@@ -673,9 +673,17 @@ void ToolKit::ToolKitNetworking::NetworkManager::ParameterConstructor() {
 
   ParamPlayerPrefab().m_validator = [](ToolKit::Value &val,
                                        String &msg) -> bool {
-    if (PrefabPtr *prefabPtr = std::get_if<PrefabPtr>(&val)) {
-      PrefabPtr prefab = *prefabPtr;
-      if (prefab) {
+    if (ScenePtr *scenePtr = std::get_if<ScenePtr>(&val)) {
+      ScenePtr scene = *scenePtr;
+      if (scene) {
+        String path = scene->GetFile();
+        if (path.empty())
+          return true;
+
+        PrefabPtr prefab = std::make_shared<Prefab>();
+        prefab->SetPrefabPathVal(path);
+        prefab->Load();
+
         bool valid = false;
         prefab->Init(
             ToolKit::SceneWeakPtr()); // Load entities to check components
