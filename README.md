@@ -1,7 +1,7 @@
 # ToolKit Networking
 
 ## Overview
-**ToolKitNetworking** is a high-performance, server-authoritative networking middleware designed specifically for the ToolKit Game Engine. It seamlessly integrates with the engine's Entity-Component-System (ECS) to provide robust state replication, RPC capabilities, and efficient bandwidth usage.
+**ToolKitNetworking** is a modular, server-authoritative networking middleware designed specifically for the ToolKit Game Engine. It seamlessly integrates with the engine's Entity-Component-System (ECS) to provide robust state replication, RPC capabilities, and efficient bandwidth usage.
 
 This plugin serves as the core networking layer, handling low-level packet management (via ENet) while exposing a clean, high-level API for game logic.
 
