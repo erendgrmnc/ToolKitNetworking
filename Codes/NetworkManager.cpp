@@ -28,7 +28,7 @@ namespace ToolKit::ToolKitNetworking {
 
 TKDefineClass(NetworkManager, Component);
 NetworkManager *NetworkManager::Instance = nullptr;
-} // namespace ToolKit::ToolKitNetworking
+}
 
 ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
   Instance = this;
@@ -74,6 +74,8 @@ void ToolKit::ToolKitNetworking::NetworkManager::RegisterComponent(
     NetworkComponent *networkComponent) {
   if (networkComponent->GetNetworkID() == -1) {
     networkComponent->SetNetworkID(m_nextNetworkID++);
+  } else if (networkComponent->GetNetworkID() >= m_nextNetworkID) {
+    m_nextNetworkID = networkComponent->GetNetworkID() + 1;
   }
 
   if (std::find(m_networkComponents.begin(), m_networkComponents.end(),
@@ -87,8 +89,11 @@ void ToolKit::ToolKitNetworking::NetworkManager::RegisterComponent(
 
   m_networkComponents.push_back(networkComponent);
 
-  std::string logMsg = "NetworkComponent Registered: ID " +
-                       std::to_string(networkComponent->GetNetworkID());
+  std::string logMsg =
+      "NetworkComponent Registered: ID " +
+      std::to_string(networkComponent->GetNetworkID()) +
+      " spawnClass=" + networkComponent->GetSpawnClassName() +
+      " isDynamic=" + std::to_string(networkComponent->IsDynamicallySpawned());
   TK_LOG(logMsg.c_str());
 }
 
@@ -98,6 +103,30 @@ void ToolKit::ToolKitNetworking::NetworkManager::UnregisterComponent(
                         networkComponent);
   if (it != m_networkComponents.end()) {
     m_networkComponents.erase(it, m_networkComponents.end());
+  }
+}
+
+void ToolKit::ToolKitNetworking::NetworkManager::ClearRegisteredComponents() {
+  std::vector<NetworkComponent *> toDestroy;
+  std::swap(toDestroy, m_networkComponents);
+  m_nextNetworkID = 1;
+
+  if (GetSceneManager()->GetCurrentScene()) {
+    for (auto *nc : toDestroy) {
+      if (nc && nc->IsDynamicallySpawned()) {
+        if (auto ent = nc->GetEntity()) {
+          if (ToolKit::Entity *prefabRoot = ent->GetPrefabRoot()) {
+            if (ToolKit::Prefab *prefab = prefabRoot->As<ToolKit::Prefab>()) {
+              prefab->UnInit();
+            }
+            GetSceneManager()->GetCurrentScene()->RemoveEntity(
+                prefabRoot->GetIdVal());
+          } else {
+            GetSceneManager()->GetCurrentScene()->RemoveEntity(ent->GetIdVal());
+          }
+        }
+      }
+    }
   }
 }
 
@@ -117,7 +146,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(
       client->RegisterPacketHandler(NetworkMessage::Snapshot, this);
       client->RegisterPacketHandler(NetworkMessage::Spawn, this);
       client->RegisterPacketHandler(NetworkMessage::Despawn, this);
-      // client->RegisterPacketHandler(NetworkMessage::ClientConnected, this);
+      client->RegisterPacketHandler(NetworkMessage::ClientConnected, this);
       client->RegisterPacketHandler(NetworkMessage::Shutdown, this);
       client->RegisterPacketHandler(NetworkMessage::RPC, this);
     }
@@ -149,19 +178,19 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
       "Started as server on port " + std::to_string(port);
   TK_LOG(serverLogStr.c_str());
 
-  // Spawn Server Player/Observer if needed or handle logic elsewhere
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::Stop() {
   if (m_server) {
-    m_server->Shutdown(); // Retained original shutdown call
+    m_server->Shutdown(); 
     m_server = nullptr;
   }
   if (m_client) {
-    m_client->Disconnect(); // Retained original disconnect call
+    m_client->Disconnect();
     m_client = nullptr;
   }
-  m_networkComponents.clear();
+
+  ClearRegisteredComponents();
 }
 
 ToolKit::ToolKitNetworking::NetworkSpawnService &
@@ -181,6 +210,7 @@ ToolKit::ToolKitNetworking::NetworkManager::InstantiateNetworkObject(
     if (GetSceneManager()->GetCurrentScene()) {
       GetSceneManager()->GetCurrentScene()->AddEntity(outEntity);
     }
+    netComp->SetIsDynamicallySpawned(true);
     return netComp;
   }
 
@@ -190,12 +220,20 @@ ToolKit::ToolKitNetworking::NetworkManager::InstantiateNetworkObject(
   }
 
   if (auto scene = GetSceneManager()->GetCurrentScene()) {
+    int countBefore = (int)scene->GetEntities().size();
     auto &prefab = scene->LinkPrefab(fullPath);
+    int countAfter = (int)scene->GetEntities().size();
 
-    if (auto networkEntity = prefab.get()->GetInstancedEntities().front()) {
-      if (auto networkComp = networkEntity->GetComponent<NetworkComponent>()) {
-        outEntity = networkEntity;
-        return networkComp.get();
+    if (prefab && !prefab->GetInstancedEntities().empty() &&
+        countAfter > countBefore) {
+      auto networkEntity = prefab->GetInstancedEntities().front();
+      if (networkEntity) {
+        if (auto networkComp =
+                networkEntity->GetComponent<NetworkComponent>()) {
+          outEntity = networkEntity;
+          networkComp->SetIsDynamicallySpawned(true);
+          return networkComp.get();
+        }
       }
     }
   }
@@ -231,6 +269,9 @@ ToolKit::ToolKitNetworking::NetworkManager::SpawnNetworkObject(
   if (netComp->GetSpawnClassName().empty()) {
     netComp->SetSpawnClassName(prefabName);
   }
+
+  RegisterComponent(
+      netComp);
 
   netComp->OnNetworkSpawn();
 
@@ -278,6 +319,10 @@ void ToolKit::ToolKitNetworking::NetworkManager::SendClientUpdate(
   if (!component || !m_client)
     return;
 
+  if (IsServer()) {
+    return;
+  }
+
   if (auto entity = component->GetEntity()) {
     Vec3 pos = entity->m_node->GetTranslation();
     Quaternion rot = entity->m_node->GetOrientation();
@@ -293,7 +338,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::SendClientUpdate(
     packet.rw = rot.w;
 
     m_client->SendPacket(packet,
-                         false); // Unreliable for frequent position updates
+                         false);
   }
 }
 
@@ -329,22 +374,19 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(
       }
 
       if (targetComponent) {
-        targetComponent->Deserialize(m_receiveStream, baseTick);
+        bool isLocallyOwned =
+            !IsServer() && (targetComponent->GetOwnerID() == GetLocalPeerID());
 
-        // Log Client Receive
-        if (auto ent = targetComponent->GetEntity()) {
-          Vec3 pos = ent->m_node->GetTranslation();
-          String log = "Client Recv NetID: " + std::to_string(networkID) +
-                       " NewPos: " + std::to_string(pos.x) + ", " +
-                       std::to_string(pos.y) + ", " + std::to_string(pos.z);
-          TK_LOG(log.c_str());
+        if (!isLocallyOwned) {
+          targetComponent->Deserialize(m_receiveStream, baseTick);
+        } else {
+          m_receiveStream.Skip(packetSize);
         }
       } else {
         m_receiveStream.Skip(packetSize);
       }
     }
 
-    // Send Ack
     if (m_client) {
       SnapshotAckPacket ack;
       ack.ackTick = packet->serverTick;
@@ -354,10 +396,9 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(
     SnapshotAckPacket *ack = (SnapshotAckPacket *)payload;
     m_peerLastAckedTick[source] = ack->ackTick;
   }
-  // In ReceivePacket...
+
   else if (type == NetworkMessage::ClientConnected) {
     if (IsServer()) {
-      // Send all existing objects to the new client
       for (auto *nc : m_networkComponents) {
         SpawnPacket msg;
         msg.networkID = nc->GetNetworkID();
@@ -370,7 +411,6 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(
 
         strncpy(msg.className, nc->GetSpawnClassName().c_str(), 127);
 
-        // Only replicate objects that are actually in the scene
         if (auto ent = nc->GetEntity()) {
           if (ent->m_scene.lock() == nullptr) {
             continue;
@@ -418,15 +458,16 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(
           InstantiateNetworkObject(className, newEntity);
 
       if (netComp && newEntity) {
-        // Force ID from server
         netComp->SetNetworkID(p->networkID);
         netComp->SetOwnerID(p->ownerID);
         netComp->SetSpawnClassName(className);
+        netComp->SetIsDynamicallySpawned(true);
 
         newEntity->m_node->SetTranslation(Vec3(p->px, p->py, p->pz));
         newEntity->m_node->SetOrientation(
             Quaternion(p->rw, p->rx, p->ry, p->rz));
 
+        RegisterComponent(netComp);
         netComp->OnNetworkSpawn();
       } else {
         TK_LOG(("NetworkManager: Client failed to spawn object: " + className)
@@ -437,7 +478,6 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(
     DespawnPacket *p = (DespawnPacket *)payload;
     for (auto *nc : m_networkComponents) {
       if (nc->GetNetworkID() == p->networkID) {
-        // Destroy
         if (auto ent = nc->GetEntity()) {
           if (GetSceneManager()->GetCurrentScene()) {
             GetSceneManager()->GetCurrentScene()->RemoveEntity(ent->GetIdVal());
@@ -471,6 +511,18 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(
     m_receiveStream.Write((void *)payload, payload->GetTotalSize());
     m_receiveStream.readOffset = sizeof(RPCPacket);
 
+    {
+      std::string log =
+          "RPC Recv: netID=" + std::to_string(packet->networkID) +
+          " hash=" + std::to_string(packet->functionHash) +
+          " numComponents=" + std::to_string(m_networkComponents.size());
+      TK_LOG(log.c_str());
+      for (auto *nc : m_networkComponents) {
+        TK_LOG(("  - Component ID: " + std::to_string(nc->GetNetworkID()))
+                   .c_str());
+      }
+    }
+
     NetworkComponent *targetComponent = nullptr;
     for (auto *nc : m_networkComponents) {
       if (nc->GetNetworkID() == packet->networkID) {
@@ -480,7 +532,12 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(
     }
 
     if (targetComponent) {
+      TK_LOG(("RPC Dispatch: found target, calling HandleRPC hash=" +
+              std::to_string(packet->functionHash))
+                 .c_str());
       targetComponent->HandleRPC(packet->functionHash, m_receiveStream);
+    } else {
+      TK_LOG("RPC Dispatch: no target component found!");
     }
   }
 }
@@ -505,7 +562,6 @@ void ToolKit::ToolKitNetworking::NetworkManager::BroadcastSnapshot() {
     for (auto *networkComponent : m_networkComponents) {
       networkComponent->Serialize(m_sendStream, -1);
 
-      // Log Server Broadcast
       if (auto ent = networkComponent->GetEntity()) {
         Vec3 pos = ent->m_node->GetTranslation();
         String log = "Server Broadcast NetID: " +
@@ -549,7 +605,6 @@ void ToolKit::ToolKitNetworking::NetworkManager::SendSnapshotToPeer(
   for (auto *networkComponent : m_networkComponents) {
     networkComponent->Serialize(m_sendStream, baseTick);
 
-    // Log Server Peer Send
     if (auto ent = networkComponent->GetEntity()) {
       Vec3 pos = ent->m_node->GetTranslation();
       String log =
@@ -617,10 +672,10 @@ bool ToolKit::ToolKitNetworking::NetworkManager::IsServer() const {
 }
 
 int ToolKit::ToolKitNetworking::NetworkManager::GetLocalPeerID() const {
-  if (IsServer())
-    return 0;
   if (m_client)
     return m_client->GetPeerID();
+  if (IsServer())
+    return 0;
   return -1;
 }
 
@@ -639,11 +694,18 @@ bool ToolKit::ToolKitNetworking::NetworkManager::IsClient() const {
 void ToolKit::ToolKitNetworking::NetworkManager::SendRPCPacket(
     PacketStream &rpcStream, RPCReceiver target, int ownerID) {
   GamePacket *packet = reinterpret_cast<GamePacket *>(rpcStream.GetData());
+
+  TK_LOG(("SendRPCPacket: isServer=" + std::to_string(IsServer()) +
+          " hasClient=" + std::to_string(m_client != nullptr) +
+          " target=" + std::to_string((int)target))
+             .c_str());
+
   if (IsServer()) {
     if (target == RPCReceiver::Server) {
       ReceivePacket(packet->type, packet, -1);
     } else if (target == RPCReceiver::All) {
       m_server->SendGlobalPacket(*packet, true);
+      ReceivePacket(packet->type, packet, -1);
     } else if (target == RPCReceiver::Owner) {
       if (GetLocalPeerID() == ownerID) {
         ReceivePacket(packet->type, packet, -1);
@@ -686,14 +748,14 @@ void ToolKit::ToolKitNetworking::NetworkManager::ParameterConstructor() {
 
         bool valid = false;
         prefab->Init(
-            ToolKit::SceneWeakPtr()); // Load entities to check components
+            ToolKit::SceneWeakPtr());
         for (EntityPtr child : prefab->GetInstancedEntities()) {
           if (child->GetComponent<NetworkComponent>()) {
             valid = true;
             break;
           }
         }
-        prefab->UnInit(); // Cleanup
+        prefab->UnInit();
 
         if (!valid) {
           msg = "Prefab must have a NetworkComponent attached to one of its "

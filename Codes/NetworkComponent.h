@@ -1,43 +1,33 @@
 #pragma once
-#include <Component.h>
-#include <vector>
-#include <memory>
-#include <map>
-#include <functional>
+#include "NetworkMacros.h"
 #include "NetworkPackets.h"
 #include "NetworkVariable.h"
-#include "NetworkMacros.h"
+#include <Component.h>
+#include <functional>
+#include <map>
+#include <memory>
+#include <vector>
 
-namespace ToolKit
-{
+namespace ToolKit {
 	class Entity;
 
-	namespace ToolKitNetworking
-	{
+	namespace ToolKitNetworking {
 		class NetworkState;
 		struct GamePacket;
 
 		typedef std::shared_ptr<class NetworkComponent> NetworkComponentPtr;
 		typedef std::vector<NetworkComponentPtr> NetworkComponentPtrArray;
 
-		enum class RPCReceiver
-		{
-			Server,
-			Owner,
-			Others,
-			All
-		};
+		enum class RPCReceiver { Server, Owner, Others, All };
 
-		struct RPCPacket : public GamePacket
-		{
+		struct RPCPacket : public GamePacket {
 			int networkID;
 			uint32_t functionHash;
 			// Data follows in the stream
-			
-			RPCPacket()
-			{
+
+			RPCPacket() {
 				type = NetworkMessage::RPC;
-				size = 0;
+				size = sizeof(RPCPacket) - sizeof(GamePacket);
 				networkID = -1;
 				functionHash = 0;
 			}
@@ -47,12 +37,11 @@ namespace ToolKit
 
 		static VariantCategory NetworkComponentCategory{ "Network Component", 90 };
 
-		class TK_NET_API NetworkComponent : public ToolKit::Component
-		{
+		class TK_NET_API NetworkComponent : public ToolKit::Component {
 		public:
 			TKDeclareClass(NetworkComponent, Component)
 
-			NetworkComponent();
+				NetworkComponent();
 			virtual ~NetworkComponent();
 
 			// Lifecycle
@@ -62,7 +51,7 @@ namespace ToolKit
 			// Identity & Authority
 			void SetNetworkID(int id);
 			int GetNetworkID() const;
-			
+
 			void SetOwnerID(int peerID);
 			int GetOwnerID() const { return m_ownerPeerID; }
 
@@ -79,8 +68,8 @@ namespace ToolKit
 
 			// RPCs
 			void RegisterRPC(const std::string& name, RPCFunction func);
-			
-			template<typename... Args>
+
+			template <typename... Args>
 			void SendRPC(const std::string& name, RPCReceiver target, Args... args);
 
 			// Internal RPC handling
@@ -100,6 +89,9 @@ namespace ToolKit
 			void SetSpawnClassName(const std::string& name) { m_spawnClassName = name; }
 			const std::string& GetSpawnClassName() const { return m_spawnClassName; }
 
+			void SetIsDynamicallySpawned(bool val) { m_isDynamicallySpawned = val; }
+			bool IsDynamicallySpawned() const { return m_isDynamicallySpawned; }
+
 		protected:
 			bool GetNetworkState(int stateID, ToolKitNetworking::NetworkState& state);
 			uint32_t CalculateHash(const std::string& name);
@@ -109,6 +101,7 @@ namespace ToolKit
 			std::string m_spawnClassName;
 			int networkID = -1;
 			int m_ownerPeerID = -1; // -1 for Server/No owner
+			bool m_isDynamicallySpawned = false;
 
 			std::vector<NetworkVariableBase*> m_networkVariables;
 			std::map<uint32_t, RPCFunction> m_rpcHandlers;
@@ -116,30 +109,26 @@ namespace ToolKit
 			ToolKitNetworking::NetworkState lastFullState;
 			std::vector<ToolKitNetworking::NetworkState> stateHistory;
 		};
-	}
-}
+	} // namespace ToolKitNetworking
+} // namespace ToolKit
 
-namespace ToolKit::ToolKitNetworking
-{
-	template<typename... Args>
-	void NetworkComponent::SendRPC(const std::string& name, RPCReceiver target, Args... args)
-	{
+namespace ToolKit::ToolKitNetworking {
+	template <typename... Args>
+	void NetworkComponent::SendRPC(const std::string& name, RPCReceiver target,
+		Args... args) {
 		PacketStream rpcStream;
 		RPCPacket header;
 		header.networkID = this->networkID;
 		header.functionHash = CalculateHash(name);
-		
+
 		rpcStream.Write(header);
-		
+
 		// Pack arguments
-		([&](const auto& arg) {
-			rpcStream.Write(arg);
-		}(args), ...);
+		([&](const auto& arg) { rpcStream.Write(arg); }(args), ...);
 
 		RPCPacket* packedHeader = (RPCPacket*)rpcStream.GetData();
 		packedHeader->size = (short)(rpcStream.GetSize() - sizeof(GamePacket));
 
 		SendRPCPacketInternal(rpcStream, target);
 	}
-}
-
+} // namespace ToolKit::ToolKitNetworking

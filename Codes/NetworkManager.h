@@ -11,7 +11,6 @@
 #include <unordered_map>
 #include <vector>
 
-
 namespace ToolKit::ToolKitNetworking {
 class GameServer;
 class GameClient;
@@ -78,6 +77,10 @@ public:
 
   void RegisterComponent(NetworkComponent *networkComponent);
   void UnregisterComponent(NetworkComponent *networkComponent);
+  void ClearRegisteredComponents();
+  const std::vector<NetworkComponent *> &GetNetworkComponents() const {
+    return m_networkComponents;
+  }
 
 TKDeclareParam(MultiChoiceVariant, Role)
     TKDeclareParam(bool, UseDeltaCompression)
