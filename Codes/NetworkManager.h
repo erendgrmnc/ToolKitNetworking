@@ -64,6 +64,9 @@ public:
   void Update(float deltaTime);
 
   int GetServerTick() const;
+
+  // Set the current server tick (used by client to track snapshot time)
+  void SetServerTick(int tick);
   bool IsServer() const;
   int GetLocalPeerID() const;
 
@@ -131,5 +134,7 @@ protected:
 
   PacketStream m_sendStream;
   PacketStream m_receiveStream;
+
+  int m_currentServerTick = 0;
 };
 } // namespace ToolKit::ToolKitNetworking

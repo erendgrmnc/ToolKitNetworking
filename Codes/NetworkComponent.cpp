@@ -14,7 +14,7 @@ namespace ToolKit::ToolKitNetworking {
 	TKDefineClass(NetworkComponent, Component);
 
 	NetworkComponent::NetworkComponent() {
-		m_ownerPeerID = -1; // Default to Server-owned
+		m_ownerPeerID = -1;
 	}
 
 	NetworkComponent::~NetworkComponent() {
@@ -73,7 +73,6 @@ namespace ToolKit::ToolKitNetworking {
 			serializer.Write(NetworkProperty::Position, currentPos, posChanged);
 			serializer.Write(NetworkProperty::Orientation, currentRot, rotChanged);
 
-			// Network Variables
 			bool anyVarDirty = false;
 			for (auto* var : m_networkVariables) {
 				if (var->IsDirty()) {
@@ -129,8 +128,6 @@ namespace ToolKit::ToolKitNetworking {
 			stateHistory.push_back(lastFullState);
 		}
 		else if (entity && entity->m_node && IsLocalPlayer()) {
-			// For locally-owned components, keep state history based on the client's
-			// actual position so delta compression has the correct base.
 			Vec3 localPos = entity->m_node->GetTranslation();
 			Quaternion localRot = entity->m_node->GetOrientation();
 			lastFullState.SetPosition(localPos);
@@ -139,7 +136,6 @@ namespace ToolKit::ToolKitNetworking {
 			stateHistory.push_back(lastFullState);
 		}
 
-		// Network Variables
 		if (deserializer.Has(NetworkProperty::NetworkVariables)) {
 			int varCount = 0;
 			stream.ReadInt(varCount);
@@ -158,13 +154,11 @@ namespace ToolKit::ToolKitNetworking {
 	}
 
 	void NetworkComponent::HandleRPC(uint32_t hash, PacketStream& stream) {
-		// 1. Check local manual handlers
 		if (m_rpcHandlers.count(hash)) {
 			m_rpcHandlers[hash](stream);
 			return;
 		}
 
-		// 2. Check global registry for macro-defined RPCs
 		auto dispatcher = NetworkRPCRegistry::Instance().GetDispatcher(Class(), hash);
 		if (dispatcher) {
 			dispatcher(this, stream);

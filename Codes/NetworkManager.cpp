@@ -28,7 +28,7 @@ namespace ToolKit::ToolKitNetworking {
 
 TKDefineClass(NetworkManager, Component);
 NetworkManager *NetworkManager::Instance = nullptr;
-}
+} // namespace ToolKit::ToolKitNetworking
 
 ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
   Instance = this;
@@ -173,16 +173,16 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
   m_server->RegisterPacketHandler(
       ToolKitNetworking::NetworkMessage::SnapshotAck, this);
   m_server->RegisterPacketHandler(ToolKitNetworking::NetworkMessage::RPC, this);
+  m_server->RegisterPacketHandler(NetworkMessage::ClientUpdate, this);
 
   const std::string serverLogStr =
       "Started as server on port " + std::to_string(port);
   TK_LOG(serverLogStr.c_str());
-
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::Stop() {
   if (m_server) {
-    m_server->Shutdown(); 
+    m_server->Shutdown();
     m_server = nullptr;
   }
   if (m_client) {
@@ -270,8 +270,7 @@ ToolKit::ToolKitNetworking::NetworkManager::SpawnNetworkObject(
     netComp->SetSpawnClassName(prefabName);
   }
 
-  RegisterComponent(
-      netComp);
+  RegisterComponent(netComp);
 
   netComp->OnNetworkSpawn();
 
@@ -337,8 +336,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::SendClientUpdate(
     packet.rz = rot.z;
     packet.rw = rot.w;
 
-    m_client->SendPacket(packet,
-                         false);
+    m_client->SendPacket(packet, false);
   }
 }
 
@@ -355,6 +353,10 @@ void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(
 
     int entityCount = packet->entityCount;
     int baseTick = packet->baseTick;
+
+    if (!IsServer()) {
+      SetServerTick(packet->serverTick);
+    }
 
     for (int i = 0; i < entityCount; i++) {
       int networkID = -1;
@@ -664,7 +666,11 @@ void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsClient(
 int ToolKit::ToolKitNetworking::NetworkManager::GetServerTick() const {
   if (m_server)
     return m_server->GetServerTick();
-  return 0;
+  return m_currentServerTick;
+}
+
+void ToolKit::ToolKitNetworking::NetworkManager::SetServerTick(int tick) {
+  m_currentServerTick = tick;
 }
 
 bool ToolKit::ToolKitNetworking::NetworkManager::IsServer() const {
@@ -747,8 +753,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::ParameterConstructor() {
         prefab->Load();
 
         bool valid = false;
-        prefab->Init(
-            ToolKit::SceneWeakPtr());
+        prefab->Init(ToolKit::SceneWeakPtr());
         for (EntityPtr child : prefab->GetInstancedEntities()) {
           if (child->GetComponent<NetworkComponent>()) {
             valid = true;
