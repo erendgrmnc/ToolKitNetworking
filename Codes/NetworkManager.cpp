@@ -1,16 +1,11 @@
 #include "NetworkManager.h"
 #include "GameClient.h"
 #include "GameServer.h"
-#include "NetworkComponent.h"
-#include "NetworkPackets.h"
+#include "NetworkSessionManager.h"
 #include "NetworkSpawnService.h"
-#include <Entity.h>
-#include <Node.h>
 #include <Prefab.h>
 #include <Scene.h>
 #include <ToolKit.h>
-#include <algorithm>
-#include <cmath>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -21,11 +16,9 @@
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <sys/types.h>
-
 #endif
 
 namespace ToolKit::ToolKitNetworking {
-
 TKDefineClass(NetworkManager, Component);
 NetworkManager *NetworkManager::Instance = nullptr;
 } // namespace ToolKit::ToolKitNetworking
@@ -33,6 +26,7 @@ NetworkManager *NetworkManager::Instance = nullptr;
 ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
   Instance = this;
   m_server = nullptr;
+  m_client = nullptr;
   m_useDeltaCompression = true;
 
   ToolKit::MultiChoiceVariant roleVar;
@@ -59,6 +53,8 @@ ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
   roleVar.CurrentVal.Index = 0;
   m_role = roleVar;
 
+  m_replicationManager = std::make_unique<ReplicationManager>(*this);
+  m_sessionManager = std::make_unique<NetworkSessionManager>(*this);
   NetworkBase::Initialise();
 }
 
@@ -70,67 +66,11 @@ ToolKit::ToolKitNetworking::NetworkManager::~NetworkManager() {
   NetworkBase::Destroy();
 }
 
-void ToolKit::ToolKitNetworking::NetworkManager::RegisterComponent(
-    NetworkComponent *networkComponent) {
-  if (networkComponent->GetNetworkID() == -1) {
-    networkComponent->SetNetworkID(m_nextNetworkID++);
-  } else if (networkComponent->GetNetworkID() >= m_nextNetworkID) {
-    m_nextNetworkID = networkComponent->GetNetworkID() + 1;
-  }
-
-  if (std::find(m_networkComponents.begin(), m_networkComponents.end(),
-                networkComponent) != m_networkComponents.end()) {
-    return;
-  }
-
-  if (IsServer() && networkComponent->GetOwnerID() == -1) {
-    networkComponent->SetOwnerID(0);
-  }
-
-  m_networkComponents.push_back(networkComponent);
-
-  std::string logMsg =
-      "NetworkComponent Registered: ID " +
-      std::to_string(networkComponent->GetNetworkID()) +
-      " spawnClass=" + networkComponent->GetSpawnClassName() +
-      " isDynamic=" + std::to_string(networkComponent->IsDynamicallySpawned());
-  TK_LOG(logMsg.c_str());
+bool ToolKit::ToolKitNetworking::NetworkManager::StartConfiguredSession() {
+  return m_sessionManager != nullptr && m_sessionManager->StartConfiguredSession();
 }
 
-void ToolKit::ToolKitNetworking::NetworkManager::UnregisterComponent(
-    NetworkComponent *networkComponent) {
-  auto it = std::remove(m_networkComponents.begin(), m_networkComponents.end(),
-                        networkComponent);
-  if (it != m_networkComponents.end()) {
-    m_networkComponents.erase(it, m_networkComponents.end());
-  }
-}
-
-void ToolKit::ToolKitNetworking::NetworkManager::ClearRegisteredComponents() {
-  std::vector<NetworkComponent *> toDestroy;
-  std::swap(toDestroy, m_networkComponents);
-  m_nextNetworkID = 1;
-
-  if (GetSceneManager()->GetCurrentScene()) {
-    for (auto *nc : toDestroy) {
-      if (nc && nc->IsDynamicallySpawned()) {
-        if (auto ent = nc->GetEntity()) {
-          if (ToolKit::Entity *prefabRoot = ent->GetPrefabRoot()) {
-            if (ToolKit::Prefab *prefab = prefabRoot->As<ToolKit::Prefab>()) {
-              prefab->UnInit();
-            }
-            GetSceneManager()->GetCurrentScene()->RemoveEntity(
-                prefabRoot->GetIdVal());
-          } else {
-            GetSceneManager()->GetCurrentScene()->RemoveEntity(ent->GetIdVal());
-          }
-        }
-      }
-    }
-  }
-}
-
-void ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(
+bool ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(
     const std::string &host, int portNum) {
   if (m_client) {
     TK_LOG("Client already running. Stopping previous instance.");
@@ -139,8 +79,7 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(
   }
 
   m_client = MakeNewPtr<GameClient>();
-
-  if (GameClient *client = m_client.get()) {
+  if (ITransportPeer *client = m_client.get()) {
     bool isConnected = client->Connect(host, portNum);
     if (isConnected) {
       client->RegisterPacketHandler(NetworkMessage::Snapshot, this);
@@ -149,11 +88,16 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(
       client->RegisterPacketHandler(NetworkMessage::ClientConnected, this);
       client->RegisterPacketHandler(NetworkMessage::Shutdown, this);
       client->RegisterPacketHandler(NetworkMessage::RPC, this);
+    } else {
+      m_client = nullptr;
     }
+    return isConnected;
   }
+
+  return false;
 }
 
-void ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
+bool ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
   if (m_server) {
     TK_LOG("Server already running. Stopping previous instance.");
     m_server->Shutdown();
@@ -161,10 +105,17 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
   }
 
   m_server = MakeNewPtr<GameServer>(port, 2);
+  if (!m_server || !m_server->IsInitialised()) {
+    TK_LOG("Failed to start server transport.");
+    m_server = nullptr;
+    return false;
+  }
 
-  for (auto *networkComponent : m_networkComponents) {
-    if (networkComponent->GetOwnerID() == -1) {
-      networkComponent->SetOwnerID(0);
+  if (m_replicationManager) {
+    for (auto *networkComponent : m_replicationManager->GetNetworkComponents()) {
+      if (networkComponent->GetOwnerID() == -1) {
+        networkComponent->SetOwnerID(0);
+      }
     }
   }
 
@@ -178,19 +129,16 @@ void ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
   const std::string serverLogStr =
       "Started as server on port " + std::to_string(port);
   TK_LOG(serverLogStr.c_str());
+
+  return true;
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::Stop() {
-  if (m_server) {
-    m_server->Shutdown();
-    m_server = nullptr;
-  }
-  if (m_client) {
-    m_client->Disconnect();
-    m_client = nullptr;
-  }
+  StopSessionTransports();
 
-  ClearRegisteredComponents();
+  if (m_sessionManager) {
+    m_sessionManager->StopSession();
+  }
 }
 
 ToolKit::ToolKitNetworking::NetworkSpawnService &
@@ -199,478 +147,59 @@ ToolKit::ToolKitNetworking::NetworkManager::GetSpawnService() {
 }
 
 ToolKit::ToolKitNetworking::NetworkComponent *
-ToolKit::ToolKitNetworking::NetworkManager::InstantiateNetworkObject(
-    const std::string &typeOrPath, EntityPtr &outEntity) {
-  NetworkComponent *netComp = GetSpawnService().Spawn(typeOrPath);
-  outEntity = nullptr;
-
-  if (netComp) {
-    outEntity = std::make_shared<Entity>();
-    outEntity->AddComponent(ComponentPtr(netComp));
-    if (GetSceneManager()->GetCurrentScene()) {
-      GetSceneManager()->GetCurrentScene()->AddEntity(outEntity);
-    }
-    netComp->SetIsDynamicallySpawned(true);
-    return netComp;
-  }
-
-  String fullPath = typeOrPath;
-  if (!ToolKit::CheckFile(fullPath)) {
-    fullPath = ToolKit::PrefabPath(fullPath);
-  }
-
-  if (auto scene = GetSceneManager()->GetCurrentScene()) {
-    int countBefore = (int)scene->GetEntities().size();
-    auto &prefab = scene->LinkPrefab(fullPath);
-    int countAfter = (int)scene->GetEntities().size();
-
-    if (prefab && !prefab->GetInstancedEntities().empty() &&
-        countAfter > countBefore) {
-      auto networkEntity = prefab->GetInstancedEntities().front();
-      if (networkEntity) {
-        if (auto networkComp =
-                networkEntity->GetComponent<NetworkComponent>()) {
-          outEntity = networkEntity;
-          networkComp->SetIsDynamicallySpawned(true);
-          return networkComp.get();
-        }
-      }
-    }
-  }
-
-  TK_LOG(("NetworkManager: InstantiateNetworkObject failed for: " + typeOrPath)
-             .c_str());
-  return nullptr;
-}
-
-ToolKit::ToolKitNetworking::NetworkComponent *
 ToolKit::ToolKitNetworking::NetworkManager::SpawnNetworkObject(
     const std::string &prefabName, int ownerID, const Vec3 &pos,
     const Quaternion &rot) {
-  EntityPtr newEntity = nullptr;
-  NetworkComponent *netComp = InstantiateNetworkObject(prefabName, newEntity);
-
-  if (!netComp || !newEntity) {
-    TK_LOG(("NetworkManager: Failed to spawn - Class factory not found/failed "
-            "or Prefab invalid for type: " +
-            prefabName)
-               .c_str());
+  if (!m_replicationManager) {
     return nullptr;
   }
 
-  newEntity->m_node->SetTranslation(pos);
-  newEntity->m_node->SetOrientation(rot);
-
-  if (netComp->GetNetworkID() == -1) {
-    netComp->SetNetworkID(m_nextNetworkID++);
-  }
-  netComp->SetOwnerID(ownerID);
-
-  if (netComp->GetSpawnClassName().empty()) {
-    netComp->SetSpawnClassName(prefabName);
-  }
-
-  RegisterComponent(netComp);
-
-  netComp->OnNetworkSpawn();
-
-  if (IsServer()) {
-    SpawnPacket packet;
-    packet.networkID = netComp->GetNetworkID();
-    packet.ownerID = ownerID;
-    packet.px = pos.x;
-    packet.py = pos.y;
-    packet.pz = pos.z;
-    packet.rx = rot.x;
-    packet.ry = rot.y;
-    packet.rz = rot.z;
-    packet.rw = rot.w;
-    strncpy(packet.className, prefabName.c_str(), 127);
-
-    m_server->SendGlobalPacket(packet, true);
-  }
-
-  return netComp;
+  return m_replicationManager->SpawnNetworkObject(prefabName, ownerID, pos, rot);
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::DespawnNetworkObject(
     NetworkComponent *component) {
-  if (!component)
-    return;
-
-  int netID = component->GetNetworkID();
-
-  if (IsServer()) {
-    DespawnPacket packet;
-    packet.networkID = netID;
-    m_server->SendGlobalPacket(packet, true);
-  }
-
-  if (auto entity = component->GetEntity()) {
-    if (GetSceneManager()->GetCurrentScene()) {
-      GetSceneManager()->GetCurrentScene()->RemoveEntity(entity->GetIdVal());
-    }
+  if (m_replicationManager) {
+    m_replicationManager->DespawnNetworkObject(component);
   }
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::SendClientUpdate(
     NetworkComponent *component) {
-  if (!component || !m_client)
-    return;
-
-  if (IsServer()) {
-    return;
-  }
-
-  if (auto entity = component->GetEntity()) {
-    Vec3 pos = entity->m_node->GetTranslation();
-    Quaternion rot = entity->m_node->GetOrientation();
-
-    ClientUpdatePacket packet;
-    packet.networkID = component->GetNetworkID();
-    packet.px = pos.x;
-    packet.py = pos.y;
-    packet.pz = pos.z;
-    packet.rx = rot.x;
-    packet.ry = rot.y;
-    packet.rz = rot.z;
-    packet.rw = rot.w;
-
-    m_client->SendPacket(packet, false);
+  if (m_replicationManager) {
+    m_replicationManager->SendClientUpdate(component);
   }
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::ReceivePacket(
     int type, GamePacket *payload, int source) {
-  if (type == NetworkMessage::Snapshot) {
-    m_receiveStream.Clear();
-
-    int totalSize = payload->GetTotalSize();
-    m_receiveStream.Write((void *)payload, totalSize);
-
-    m_receiveStream.readOffset = sizeof(WorldSnapshotPacket);
-    WorldSnapshotPacket *packet = (WorldSnapshotPacket *)payload;
-
-    int entityCount = packet->entityCount;
-    int baseTick = packet->baseTick;
-
-    if (!IsServer()) {
-      SetServerTick(packet->serverTick);
-    }
-
-    for (int i = 0; i < entityCount; i++) {
-      int networkID = -1;
-      if (!m_receiveStream.Read(networkID))
-        break;
-
-      int packetSize = 0;
-      if (!m_receiveStream.Read(packetSize))
-        break;
-
-      NetworkComponent *targetComponent = nullptr;
-      for (auto *networkComponent : m_networkComponents) {
-        if (networkComponent->GetNetworkID() == networkID) {
-          targetComponent = networkComponent;
-          break;
-        }
-      }
-
-      if (targetComponent) {
-        bool isLocallyOwned =
-            !IsServer() && (targetComponent->GetOwnerID() == GetLocalPeerID());
-
-        if (!isLocallyOwned) {
-          targetComponent->Deserialize(m_receiveStream, baseTick);
-        } else {
-          m_receiveStream.Skip(packetSize);
-        }
-      } else {
-        m_receiveStream.Skip(packetSize);
-      }
-    }
-
-    if (m_client) {
-      SnapshotAckPacket ack;
-      ack.ackTick = packet->serverTick;
-      m_client->SendPacket(ack);
-    }
-  } else if (type == NetworkMessage::SnapshotAck) {
-    SnapshotAckPacket *ack = (SnapshotAckPacket *)payload;
-    m_peerLastAckedTick[source] = ack->ackTick;
+  if (m_replicationManager) {
+    m_replicationManager->ReceivePacket(type, payload, source);
   }
-
-  else if (type == NetworkMessage::ClientConnected) {
-    if (IsServer()) {
-      for (auto *nc : m_networkComponents) {
-        SpawnPacket msg;
-        msg.networkID = nc->GetNetworkID();
-        msg.ownerID = nc->GetOwnerID();
-
-        if (nc->GetSpawnClassName().empty()) {
-          TK_LOG("Warning: Replicating object with no SpanwClassName!");
-          continue;
-        }
-
-        strncpy(msg.className, nc->GetSpawnClassName().c_str(), 127);
-
-        if (auto ent = nc->GetEntity()) {
-          if (ent->m_scene.lock() == nullptr) {
-            continue;
-          }
-
-          Vec3 p = ent->m_node->GetTranslation();
-          Quaternion r = ent->m_node->GetOrientation();
-          msg.px = p.x;
-          msg.py = p.y;
-          msg.pz = p.z;
-          msg.rx = r.x;
-          msg.ry = r.y;
-          msg.rz = r.z;
-          msg.rw = r.w;
-        } else {
-          continue;
-        }
-
-        m_server->SendPacketToPeer(source, msg, true);
-      }
-
-      if (GetPlayerPrefabVal()) {
-        SpawnNetworkObject(GetPlayerPrefabVal()->GetFile(), source,
-                           Vec3(0, 5, 0), Quaternion());
-      } else {
-        TK_LOG("NetworkManager: No PlayerPrefab configured! New client will "
-               "not have a player object.");
-      }
-    }
-  } else if (type == NetworkMessage::Spawn) {
-    SpawnPacket *p = (SpawnPacket *)payload;
-
-    bool exists = false;
-    for (auto *nc : m_networkComponents) {
-      if (nc->GetNetworkID() == p->networkID) {
-        exists = true;
-        break;
-      }
-    }
-
-    if (!exists) {
-      std::string className = p->className;
-      EntityPtr newEntity = nullptr;
-      NetworkComponent *netComp =
-          InstantiateNetworkObject(className, newEntity);
-
-      if (netComp && newEntity) {
-        netComp->SetNetworkID(p->networkID);
-        netComp->SetOwnerID(p->ownerID);
-        netComp->SetSpawnClassName(className);
-        netComp->SetIsDynamicallySpawned(true);
-
-        newEntity->m_node->SetTranslation(Vec3(p->px, p->py, p->pz));
-        newEntity->m_node->SetOrientation(
-            Quaternion(p->rw, p->rx, p->ry, p->rz));
-
-        RegisterComponent(netComp);
-        netComp->OnNetworkSpawn();
-      } else {
-        TK_LOG(("NetworkManager: Client failed to spawn object: " + className)
-                   .c_str());
-      }
-    }
-  } else if (type == NetworkMessage::Despawn) {
-    DespawnPacket *p = (DespawnPacket *)payload;
-    for (auto *nc : m_networkComponents) {
-      if (nc->GetNetworkID() == p->networkID) {
-        if (auto ent = nc->GetEntity()) {
-          if (GetSceneManager()->GetCurrentScene()) {
-            GetSceneManager()->GetCurrentScene()->RemoveEntity(ent->GetIdVal());
-          }
-        }
-        break;
-      }
-    }
-  } else if (type == NetworkMessage::ClientUpdate) {
-    if (IsServer()) {
-      ClientUpdatePacket *p = (ClientUpdatePacket *)payload;
-      NetworkComponent *target = nullptr;
-      for (auto *nc : m_networkComponents) {
-        if (nc->GetNetworkID() == p->networkID) {
-          target = nc;
-          break;
-        }
-      }
-
-      if (target && target->GetOwnerID() == source) {
-        if (auto ent = target->GetEntity()) {
-          ent->m_node->SetTranslation(Vec3(p->px, p->py, p->pz));
-          ent->m_node->SetOrientation(Quaternion(p->rw, p->rx, p->ry, p->rz));
-        }
-      }
-    }
-  } else if (type == NetworkMessage::RPC) {
-    RPCPacket *packet = (RPCPacket *)payload;
-
-    m_receiveStream.Clear();
-    m_receiveStream.Write((void *)payload, payload->GetTotalSize());
-    m_receiveStream.readOffset = sizeof(RPCPacket);
-
-    {
-      std::string log =
-          "RPC Recv: netID=" + std::to_string(packet->networkID) +
-          " hash=" + std::to_string(packet->functionHash) +
-          " numComponents=" + std::to_string(m_networkComponents.size());
-      TK_LOG(log.c_str());
-      for (auto *nc : m_networkComponents) {
-        TK_LOG(("  - Component ID: " + std::to_string(nc->GetNetworkID()))
-                   .c_str());
-      }
-    }
-
-    NetworkComponent *targetComponent = nullptr;
-    for (auto *nc : m_networkComponents) {
-      if (nc->GetNetworkID() == packet->networkID) {
-        targetComponent = nc;
-        break;
-      }
-    }
-
-    if (targetComponent) {
-      TK_LOG(("RPC Dispatch: found target, calling HandleRPC hash=" +
-              std::to_string(packet->functionHash))
-                 .c_str());
-      targetComponent->HandleRPC(packet->functionHash, m_receiveStream);
-    } else {
-      TK_LOG("RPC Dispatch: no target component found!");
-    }
-  }
-}
-
-void ToolKit::ToolKitNetworking::NetworkManager::BroadcastSnapshot() {
-  if (!m_server)
-    return;
-
-  int currentTick = m_server->GetServerTick();
-
-  if (!m_useDeltaCompression) {
-    m_sendStream.Clear();
-
-    WorldSnapshotPacket header;
-    header.type = NetworkMessage::Snapshot;
-    header.size = 0;
-    header.serverTick = currentTick;
-    header.baseTick = -1;
-    header.entityCount = (int)m_networkComponents.size();
-    m_sendStream.Write(header);
-
-    for (auto *networkComponent : m_networkComponents) {
-      networkComponent->Serialize(m_sendStream, -1);
-
-      if (auto ent = networkComponent->GetEntity()) {
-        Vec3 pos = ent->m_node->GetTranslation();
-        String log = "Server Broadcast NetID: " +
-                     std::to_string(networkComponent->GetNetworkID()) +
-                     " Pos: " + std::to_string(pos.x) + ", " +
-                     std::to_string(pos.y) + ", " + std::to_string(pos.z);
-        TK_LOG(log.c_str());
-      }
-    }
-
-    size_t totalSize = m_sendStream.GetSize();
-    WorldSnapshotPacket *packetHeader =
-        (WorldSnapshotPacket *)m_sendStream.GetData();
-    packetHeader->size = (short)(totalSize - sizeof(GamePacket));
-
-    m_server->SendGlobalPacket(
-        *reinterpret_cast<GamePacket *>(m_sendStream.GetData()), false);
-  } else {
-    for (int peerID : m_server->GetConnectedPeers()) {
-      int baseTick = -1;
-      if (m_peerLastAckedTick.count(peerID)) {
-        baseTick = m_peerLastAckedTick[peerID];
-      }
-      SendSnapshotToPeer(peerID, baseTick);
-    }
-  }
-}
-
-void ToolKit::ToolKitNetworking::NetworkManager::SendSnapshotToPeer(
-    int peerID, int baseTick) {
-  m_sendStream.Clear();
-
-  WorldSnapshotPacket header;
-  header.type = NetworkMessage::Snapshot;
-  header.size = 0;
-  header.serverTick = m_server->GetServerTick();
-  header.baseTick = baseTick;
-  header.entityCount = (int)m_networkComponents.size();
-  m_sendStream.Write(header);
-
-  for (auto *networkComponent : m_networkComponents) {
-    networkComponent->Serialize(m_sendStream, baseTick);
-
-    if (auto ent = networkComponent->GetEntity()) {
-      Vec3 pos = ent->m_node->GetTranslation();
-      String log =
-          "Server Send to Peer(" + std::to_string(peerID) +
-          ") NetID: " + std::to_string(networkComponent->GetNetworkID()) +
-          " Pos: " + std::to_string(pos.x) + ", " + std::to_string(pos.y) +
-          ", " + std::to_string(pos.z);
-      TK_LOG(log.c_str());
-    }
-  }
-
-  size_t totalSize = m_sendStream.GetSize();
-  WorldSnapshotPacket *packetHeader =
-      (WorldSnapshotPacket *)m_sendStream.GetData();
-  packetHeader->size = (short)(totalSize - sizeof(GamePacket));
-
-  m_server->SendPacketToPeer(
-      peerID, *reinterpret_cast<GamePacket *>(m_sendStream.GetData()), false);
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::Update(float deltaTime) {
-  if (m_server.get()) {
-    UpdateAsServer(deltaTime);
+  if (m_sessionManager) {
+    m_sessionManager->Update();
   }
 
-  if (m_client.get()) {
-    UpdateAsClient(deltaTime);
-  }
-}
-
-void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsServer(
-    float deltaTime) {
-
-  if (m_server) {
-    m_server->UpdateServer();
-  }
-
-  BroadcastSnapshot();
-}
-
-void ToolKit::ToolKitNetworking::NetworkManager::UpdateAsClient(
-    float deltaTime) {
-  m_client.get()->UpdateClient();
-
-  static float updateTimer = 0.0f;
-  updateTimer += deltaTime;
-  if (updateTimer >= 0.05f) {
-    updateTimer = 0.0f;
-    for (auto *nc : m_networkComponents) {
-      if (nc->IsLocalPlayer()) {
-        SendClientUpdate(nc);
-      }
-    }
+  if (m_replicationManager) {
+    m_replicationManager->Update(deltaTime);
   }
 }
 
 int ToolKit::ToolKitNetworking::NetworkManager::GetServerTick() const {
-  if (m_server)
-    return m_server->GetServerTick();
-  return m_currentServerTick;
+  if (m_replicationManager) {
+    return m_replicationManager->GetServerTick();
+  }
+
+  return 0;
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::SetServerTick(int tick) {
-  m_currentServerTick = tick;
+  if (m_replicationManager) {
+    m_replicationManager->SetServerTick(tick);
+  }
 }
 
 bool ToolKit::ToolKitNetworking::NetworkManager::IsServer() const {
@@ -678,10 +207,12 @@ bool ToolKit::ToolKitNetworking::NetworkManager::IsServer() const {
 }
 
 int ToolKit::ToolKitNetworking::NetworkManager::GetLocalPeerID() const {
-  if (m_client)
+  if (m_client) {
     return m_client->GetPeerID();
-  if (IsServer())
+  }
+  if (IsServer()) {
     return 0;
+  }
   return -1;
 }
 
@@ -697,32 +228,97 @@ bool ToolKit::ToolKitNetworking::NetworkManager::IsClient() const {
   return m_role.GetEnum<NetworkRole>() == NetworkRole::Client;
 }
 
+const std::vector<ToolKit::ToolKitNetworking::NetworkComponent *> &
+ToolKit::ToolKitNetworking::NetworkManager::GetNetworkComponents() const {
+  static const std::vector<NetworkComponent *> emptyComponents;
+  if (!m_replicationManager) {
+    return emptyComponents;
+  }
+
+  return m_replicationManager->GetNetworkComponents();
+}
+
+ToolKit::ToolKitNetworking::HostingMode
+ToolKit::ToolKitNetworking::NetworkManager::GetConfiguredHostingMode() const {
+  return SessionCore::LegacyRoleToHostingMode(m_role.GetEnum<NetworkRole>());
+}
+
+bool ToolKit::ToolKitNetworking::NetworkManager::StartServerTransport(
+    uint16_t port) {
+  return StartAsServer(port);
+}
+
+bool ToolKit::ToolKitNetworking::NetworkManager::StartClientTransport(
+    const String &host, uint16_t port) {
+  return StartAsClient(host, static_cast<int>(port));
+}
+
+void ToolKit::ToolKitNetworking::NetworkManager::StopSessionTransports() {
+  ShutdownTransports();
+
+  if (m_replicationManager) {
+    m_replicationManager->ClearRegisteredComponents();
+  }
+}
+
+bool ToolKit::ToolKitNetworking::NetworkManager::HasServerTransport() const {
+  return m_server != nullptr;
+}
+
+bool ToolKit::ToolKitNetworking::NetworkManager::HasClientTransport() const {
+  return m_client != nullptr;
+}
+
+bool ToolKit::ToolKitNetworking::NetworkManager::IsClientTransportConnected() const {
+  return m_client != nullptr && m_client->GetIsConnected();
+}
+
+ToolKit::ToolKitNetworking::ConnectionStatus
+ToolKit::ToolKitNetworking::NetworkManager::GetConnectionStatus() const {
+  if (m_sessionManager) {
+    return m_sessionManager->GetConnectionStatus();
+  }
+
+  ConnectionStatus status;
+  status.state = ConnectionState::Idle;
+  status.disconnectReason = DisconnectReason::None;
+  status.detailMessage = "No session manager.";
+  return status;
+}
+
+ToolKit::ToolKitNetworking::HostingMode
+ToolKit::ToolKitNetworking::NetworkManager::GetHostingMode() const {
+  if (m_sessionManager) {
+    return m_sessionManager->ResolveHostingMode();
+  }
+
+  return HostingMode::None;
+}
+
 void ToolKit::ToolKitNetworking::NetworkManager::SendRPCPacket(
     PacketStream &rpcStream, RPCReceiver target, int ownerID) {
-  GamePacket *packet = reinterpret_cast<GamePacket *>(rpcStream.GetData());
+  if (m_replicationManager) {
+    m_replicationManager->SendRPCPacket(rpcStream, target, ownerID);
+  }
+}
 
-  TK_LOG(("SendRPCPacket: isServer=" + std::to_string(IsServer()) +
-          " hasClient=" + std::to_string(m_client != nullptr) +
-          " target=" + std::to_string((int)target))
-             .c_str());
+void ToolKit::ToolKitNetworking::NetworkManager::RegisterComponent(
+    NetworkComponent *networkComponent) {
+  if (m_replicationManager) {
+    m_replicationManager->RegisterComponent(networkComponent);
+  }
+}
 
-  if (IsServer()) {
-    if (target == RPCReceiver::Server) {
-      ReceivePacket(packet->type, packet, -1);
-    } else if (target == RPCReceiver::All) {
-      m_server->SendGlobalPacket(*packet, true);
-      ReceivePacket(packet->type, packet, -1);
-    } else if (target == RPCReceiver::Owner) {
-      if (GetLocalPeerID() == ownerID) {
-        ReceivePacket(packet->type, packet, -1);
-      } else if (ownerID != -1) {
-        m_server->SendPacketToPeer(ownerID, *packet, true);
-      }
-    } else if (target == RPCReceiver::Others) {
-      m_server->SendGlobalPacket(*packet, true);
-    }
-  } else if (m_client) {
-    m_client->SendPacket(*packet, true);
+void ToolKit::ToolKitNetworking::NetworkManager::UnregisterComponent(
+    NetworkComponent *networkComponent) {
+  if (m_replicationManager) {
+    m_replicationManager->UnregisterComponent(networkComponent);
+  }
+}
+
+void ToolKit::ToolKitNetworking::NetworkManager::ClearRegisteredComponents() {
+  if (m_replicationManager) {
+    m_replicationManager->ClearRegisteredComponents();
   }
 }
 
@@ -745,8 +341,9 @@ void ToolKit::ToolKitNetworking::NetworkManager::ParameterConstructor() {
       ScenePtr scene = *scenePtr;
       if (scene) {
         String path = scene->GetFile();
-        if (path.empty())
+        if (path.empty()) {
           return true;
+        }
 
         PrefabPtr prefab = std::make_shared<Prefab>();
         prefab->SetPrefabPathVal(path);
@@ -784,7 +381,7 @@ const char *ToolKit::ToolKitNetworking::NetworkManager::GetIPV4() {
   char hostname[256];
   if (gethostname(hostname, sizeof(hostname)) != SOCKET_ERROR) {
     addrinfo hints = {}, *info = nullptr;
-    hints.ai_family = AF_INET; // IPv4
+    hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
 
     if (getaddrinfo(hostname, nullptr, &hints, &info) == 0) {
@@ -792,7 +389,6 @@ const char *ToolKit::ToolKitNetworking::NetworkManager::GetIPV4() {
         sockaddr_in *addr = reinterpret_cast<sockaddr_in *>(p->ai_addr);
         const char *addrStr = inet_ntoa(addr->sin_addr);
 
-        // Skip loopback
         if (strcmp(addrStr, "127.0.0.1") != 0) {
           strncpy(ipBuffer, addrStr, sizeof(ipBuffer) - 1);
           break;
@@ -804,34 +400,48 @@ const char *ToolKit::ToolKitNetworking::NetworkManager::GetIPV4() {
   }
 
   WSACleanup();
-
 #else
   struct ifaddrs *ifaddr = nullptr;
   if (getifaddrs(&ifaddr) == 0) {
     for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
-      if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET)
+      if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) {
         continue;
+      }
 
       sockaddr_in *addr = reinterpret_cast<sockaddr_in *>(ifa->ifa_addr);
       const char *addrStr =
           inet_ntop(AF_INET, &addr->sin_addr, ipBuffer, sizeof(ipBuffer));
 
-      if (!addrStr)
+      if (!addrStr) {
         continue;
+      }
 
-      // Skip loopback
-      if (strcmp(ipBuffer, "127.0.0.1") != 0)
+      if (strcmp(ipBuffer, "127.0.0.1") != 0) {
         break;
+      }
     }
 
     freeifaddrs(ifaddr);
   }
 #endif
 
-  if (ipBuffer[0] == '\0')
+  if (ipBuffer[0] == '\0') {
     strcpy(ipBuffer, "127.0.0.1");
+  }
 
   return ipBuffer;
+}
+
+void ToolKit::ToolKitNetworking::NetworkManager::ShutdownTransports() {
+  if (m_server) {
+    m_server->Shutdown();
+    m_server = nullptr;
+  }
+
+  if (m_client) {
+    m_client->Disconnect();
+    m_client = nullptr;
+  }
 }
 
 ToolKit::ComponentPtr

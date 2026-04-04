@@ -70,7 +70,8 @@ bool ToolKit::ToolKitNetworking::GameClient::GetIsConnected() const {
   return m_isConnected;
 }
 
-int ToolKit::ToolKitNetworking::GameClient::GetPeerID() const {
+ToolKit::ToolKitNetworking::TransportPeerId
+ToolKit::ToolKitNetworking::GameClient::GetPeerID() const {
   return m_PeerId;
 }
 

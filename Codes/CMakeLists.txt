@@ -27,6 +27,11 @@ endif()
 project (${PLUGIN_PROJECT_NAME})
 
 include(FetchContent)
+include(CTest)
+
+option(TK_NET_BUILD_TESTS "Build ToolKitNetworking tests." OFF)
+option(TK_NET_BUILD_ENGINE_TESTS "Build ToolKitNetworking engine-coupled tests." OFF)
+option(TK_NET_BUILD_ENET_SMOKE_TESTS "Build ToolKitNetworking ENet smoke tests." OFF)
 
 # Fetch enet library
 FetchContent_Declare(
@@ -70,20 +75,28 @@ set(SOURCE
     NetworkState.cpp
     NetworkPackets.cpp
     NetworkComponent.cpp
+    ReplicationManager.cpp
     GameServer.cpp
     GameClient.cpp
     NetworkManager.cpp
     NetworkSpawnService.cpp)
 
 set(HEADERS 
+    NetworkRole.h
+    NetworkSessionCore.h
     PluginMain.h
     NetworkBase.h
     NetworkState.h
     NetworkPackets.h
     NetworkComponent.h
+    ReplicationManager.h
     GameServer.h
     GameClient.h
+    ITransportHost.h
+    ITransportPeer.h
+    INetworkSessionRuntime.h
     NetworkManager.h
+    NetworkSessionManager.h
     NetworkRPCRegistry.h
     NetworkVariable.h
     NetworkMacros.h
@@ -113,13 +126,34 @@ set(TK_OUT_DIR "${TOOLKIT_DIR}/Intermediate/${TK_PLATFORM}/ToolKit/ToolKit/${TK_
 message("Using dependency output directory: ${TK_DEPENDECY_OUT_DIR}")
 message("Using toolkit output directory: ${TK_OUT_DIR}")
 
+add_library(ToolKitNetworkingCore STATIC
+    NetworkSessionCore.cpp
+)
+target_include_directories(ToolKitNetworkingCore PUBLIC
+    "${TOOLKIT_DIR}"
+    "${TOOLKIT_DIR}/ToolKit"
+    "${PLUGIN_CODE_DIR}"
+)
+target_compile_features(ToolKitNetworkingCore PUBLIC cxx_std_17)
+
+add_library(ToolKitNetworkingSessionCore STATIC
+    NetworkSessionManager.cpp
+)
+target_include_directories(ToolKitNetworkingSessionCore PUBLIC
+    "${TOOLKIT_DIR}"
+    "${TOOLKIT_DIR}/ToolKit"
+    "${PLUGIN_CODE_DIR}"
+)
+target_compile_features(ToolKitNetworkingSessionCore PUBLIC cxx_std_17)
+target_link_libraries(ToolKitNetworkingSessionCore PUBLIC ToolKitNetworkingCore)
+
 # Plugin build for editor.
 set(CMAKE_DEBUG_POSTFIX d) # Only editor needs to know the postfix for loading correct version of the plugin.
 add_library(${PLUGIN_PROJECT_NAME} SHARED ${SOURCE} ${HEADERS}) # Plugin must be a dll.
 
 target_link_directories(${PLUGIN_PROJECT_NAME} PRIVATE "${TOOLKIT_DIR}/Bin")
 target_link_directories(${PLUGIN_PROJECT_NAME} PRIVATE "${TK_DEPENDECY_OUT_DIR}")
-target_link_libraries(${PLUGIN_PROJECT_NAME} PRIVATE ${toolkit} ${imgui} ${editor})
+target_link_libraries(${PLUGIN_PROJECT_NAME} PRIVATE ToolKitNetworkingCore ToolKitNetworkingSessionCore ${toolkit} ${imgui} ${editor})
 target_link_libraries(${PLUGIN_PROJECT_NAME} PRIVATE enet Ws2_32 Winmm)
 target_include_directories(${PLUGIN_PROJECT_NAME} PRIVATE ${enet_SOURCE_DIR}/include)
 target_compile_definitions(${PLUGIN_PROJECT_NAME} PRIVATE TK_WITH_EDITOR TK_DLL_IMPORT TK_NET_EXPORT)
@@ -163,3 +197,8 @@ set(DLL $<TARGET_FILE:${PLUGIN_PROJECT_NAME}>)
 set(PDB $<TARGET_PDB_FILE:${PLUGIN_PROJECT_NAME}>)
 
 add_custom_command(TARGET ${PLUGIN_PROJECT_NAME} PRE_BUILD COMMAND ${CMAKE_COMMAND} -Ddll="${DLL}" -Dpdb="${PDB}" -Dtmp="${PLUGIN_BIN_DIR}/tmp" -P "${PLUGIN_CODE_DIR}/CMakeHotReload.cmake")
+
+if(TK_NET_BUILD_TESTS)
+    add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../Tests"
+                     "${CMAKE_CURRENT_LIST_DIR}/../Intermediate/Tests")
+endif()

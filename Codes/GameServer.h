@@ -1,36 +1,40 @@
 #pragma once
+#include "ITransportHost.h"
 #include "NetworkBase.h"
 #include <vector>
 #include <string>
 
 namespace ToolKit::ToolKitNetworking {
-	class GameServer : public NetworkBase {
+	class GameServer : public NetworkBase, public ITransportHost {
 	public:
 		GameServer(int onPort, int maxClients);
 		~GameServer();
 
 		bool Initialise();
-		void Shutdown();
+		bool IsInitialised() const override { return m_netHandle != nullptr; }
+		void Shutdown() override;
 
 		virtual void AddPeer(int peerNumber);
 		virtual void RemovePeer(int peerNumber);
 
-		bool SendGlobalReliablePacket(GamePacket& packet) const;
-		bool SendGlobalPacket(GamePacket& packet, bool reliable = false) const;
-		bool SendGlobalPacket(int messageID) const;
+		bool SendGlobalReliablePacket(GamePacket& packet) const override;
+		bool SendGlobalPacket(GamePacket& packet, bool reliable = false) const override;
+		bool SendGlobalPacket(int messageID) const override;
 		
-		bool SendPacketToPeer(int peerID, GamePacket& packet, bool reliable = false) const;
+		bool SendPacketToPeer(TransportPeerId peerID, GamePacket& packet, bool reliable = false) const override;
 
 		bool GetPeer(int peerIndex, int& peerId) const;
-		int GetConnectedPeerCount() const { return (int)m_connectedPeers.size(); }
-		const std::vector<int>& GetConnectedPeers() const { return m_connectedPeers; }
+		int GetConnectedPeerCount() const override { return (int)m_connectedPeers.size(); }
+		const std::vector<TransportPeerId>& GetConnectedPeers() const override { return m_connectedPeers; }
 
-		std::string GetIpAddress() const;
+		std::string GetIpAddress() const override;
 
-		virtual void UpdateServer();
+		virtual void UpdateServer() override;
 		void SetMaxClients(int maxClients);
+		void RegisterPacketHandler(int msgID, PacketReceiver* receiver) override { NetworkBase::RegisterPacketHandler(msgID, receiver); }
+		void ClearPacketHandlers() override { NetworkBase::ClearPacketHandlers(); }
 
-		int GetServerTick() const { return m_serverTick; }
+		int GetServerTick() const override { return m_serverTick; }
 
 	protected:
 
@@ -39,7 +43,7 @@ namespace ToolKit::ToolKitNetworking {
 
 		int m_serverTick = 0;
 
-		std::vector<int> m_connectedPeers;
+		std::vector<TransportPeerId> m_connectedPeers;
 
 		std::string m_ipAddress;
 

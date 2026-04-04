@@ -22,9 +22,9 @@ namespace ToolKit::ToolKitNetworking {
 
         static int GetDefaultPort();
 
-        void RegisterPacketHandler(int msgID, PacketReceiver* receiver);
+        virtual void RegisterPacketHandler(int msgID, PacketReceiver* receiver);
 
-        void ClearPacketHandlers();
+        virtual void ClearPacketHandlers();
 
         virtual ~NetworkBase();
 

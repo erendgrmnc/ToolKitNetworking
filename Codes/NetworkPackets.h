@@ -169,6 +169,19 @@ public:
 
   void *GetData() { return buffer.data(); }
   size_t GetSize() const { return buffer.size(); }
+  bool CanReadSize(size_t size) const {
+    return readOffset >= 0 &&
+           static_cast<size_t>(readOffset) + size <= buffer.size();
+  }
+
+  bool SkipChecked(int size) {
+    if (size < 0 || !CanReadSize(static_cast<size_t>(size))) {
+      return false;
+    }
+
+    readOffset += size;
+    return true;
+  }
 
   void Skip(size_t size) { readOffset += (int)size; }
 };

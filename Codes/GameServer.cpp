@@ -90,7 +90,7 @@ bool GameServer::SendGlobalPacket(int messageID) const {
   return SendGlobalPacket(packet, false);
 }
 
-bool GameServer::SendPacketToPeer(int peerID, GamePacket &packet,
+bool GameServer::SendPacketToPeer(TransportPeerId peerID, GamePacket &packet,
                                   bool reliable) const {
   if (!m_netHandle)
     return false;
