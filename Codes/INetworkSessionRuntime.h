@@ -1,5 +1,6 @@
 #pragma once
 
+#include "NetworkSessionCore.h"
 #include "NetworkSessionTypes.h"
 
 namespace ToolKit::ToolKitNetworking {
@@ -14,5 +15,10 @@ public:
   virtual bool HasServerTransport() const = 0;
   virtual bool HasClientTransport() const = 0;
   virtual bool IsClientTransportConnected() const = 0;
+  virtual bool BeginSessionHandshake(const SessionJoinRequest &request) = 0;
+  virtual bool IsSessionAuthenticated() const = 0;
+  virtual bool HasSessionAuthFailed() const = 0;
+  virtual DisconnectReason GetSessionAuthFailureReason() const = 0;
+  virtual String GetSessionAuthFailureDetail() const = 0;
 };
 } // namespace ToolKit::ToolKitNetworking

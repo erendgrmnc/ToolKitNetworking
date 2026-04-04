@@ -24,7 +24,10 @@ struct SessionBootstrapConfig {
   String bindAddress;
   String advertisedAddress;
   String buildCompatibilityId;
+  String sessionId;
+  String joinCredential;
   uint maxClients = 2;
+  bool requireJoinCredential = false;
 };
 
 namespace SessionCore {

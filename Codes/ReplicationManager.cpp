@@ -9,6 +9,29 @@
 #include <Scene.h>
 #include <ToolKit.h>
 #include <algorithm>
+#include <cstring>
+#include <random>
+
+namespace {
+constexpr size_t SessionStringCapacity = 64;
+constexpr size_t RejectDetailCapacity = 128;
+
+template <size_t N>
+ToolKit::String PacketStringToString(const char (&value)[N]) {
+  return ToolKit::String(value, strnlen(value, N));
+}
+
+template <size_t N>
+void CopyStringToPacketField(char (&target)[N], const ToolKit::String &value) {
+  std::memset(target, 0, N);
+  strncpy(target, value.c_str(), N - 1);
+}
+
+uint64_t GenerateNonce() {
+  static std::mt19937_64 generator(std::random_device{}());
+  return generator();
+}
+} // namespace
 
 namespace ToolKit::ToolKitNetworking {
 ReplicationManager::ReplicationManager(NetworkManager &owner) : m_owner(owner) {}
@@ -52,10 +75,12 @@ void ReplicationManager::ClearRegisteredComponents() {
   std::swap(toDestroy, m_networkComponents);
   m_nextNetworkID = 1;
   m_peerLastAckedTick.clear();
+  m_peerHandshakeStates.clear();
   m_currentServerTick = 0;
   m_clientUpdateTimer = 0.0f;
   m_sendStream.Clear();
   m_receiveStream.Clear();
+  ResetAuthenticationState();
 
   std::vector<NetworkComponent *> preservedComponents;
   if (GetSceneManager()->GetCurrentScene()) {
@@ -145,6 +170,43 @@ NetworkComponent *ReplicationManager::InstantiateNetworkObject(
   TK_LOG(("NetworkManager: InstantiateNetworkObject failed for: " + typeOrPath)
              .c_str());
   return nullptr;
+}
+
+bool ReplicationManager::IsPeerAuthenticated(int peerID) const {
+  auto it = m_peerHandshakeStates.find(peerID);
+  return it != m_peerHandshakeStates.end() && it->second.authenticated;
+}
+
+void ReplicationManager::ResetAuthenticationState() {
+  m_handshakeStarted = false;
+  m_localSessionAuthenticated = false;
+  m_localAuthFailed = false;
+  m_localClientNonce = 0;
+  m_localServerNonce = 0;
+  m_pendingJoinRequest = SessionJoinRequest{};
+  m_authFailureReason = DisconnectReason::None;
+  m_authFailureDetail.clear();
+}
+
+void ReplicationManager::RejectPeer(int peerID, DisconnectReason reason,
+                                    const String &detail) const {
+  if (!m_owner.m_server) {
+    return;
+  }
+
+  HandshakeRejectPacket reject;
+  reject.reason = static_cast<int>(reason);
+  CopyStringToPacketField(reject.detail, detail);
+  m_owner.m_server->SendPacketToPeer(peerID, reject, true);
+}
+
+void ReplicationManager::RejectLocalSession(DisconnectReason reason,
+                                            const String &detail) {
+  m_handshakeStarted = false;
+  m_localAuthFailed = true;
+  m_localSessionAuthenticated = false;
+  m_authFailureReason = reason;
+  m_authFailureDetail = detail;
 }
 
 NetworkComponent *ReplicationManager::SpawnNetworkObject(
@@ -254,7 +316,247 @@ NetworkComponent *ReplicationManager::FindComponentByNetworkID(int networkID) co
   return nullptr;
 }
 
+bool ReplicationManager::BeginSessionHandshake(const SessionJoinRequest &request) {
+  if (!m_owner.m_client || !m_owner.m_client->GetIsConnected()) {
+    RejectLocalSession(DisconnectReason::TransportError,
+                       "Transport is not connected for handshake.");
+    return false;
+  }
+
+  ResetAuthenticationState();
+  m_handshakeStarted = true;
+  m_pendingJoinRequest = request;
+  m_localClientNonce = GenerateNonce();
+
+  HandshakeHelloPacket hello;
+  hello.protocolVersion = SessionProtocol::Version;
+  hello.requestedHostingMode = static_cast<uint>(HostingMode::Client);
+  hello.clientNonce = m_localClientNonce;
+  CopyStringToPacketField(hello.sessionId, request.sessionId);
+  CopyStringToPacketField(hello.joinCredential, request.joinCredential);
+  CopyStringToPacketField(hello.buildCompatibilityId,
+                          request.buildCompatibilityId);
+  m_owner.m_client->SendPacket(hello, true);
+  return true;
+}
+
+bool ReplicationManager::IsSessionAuthenticated() const {
+  return m_localSessionAuthenticated && m_owner.m_client &&
+         m_owner.m_client->GetIsConnected();
+}
+
+bool ReplicationManager::HasSessionAuthFailed() const { return m_localAuthFailed; }
+
+DisconnectReason ReplicationManager::GetSessionAuthFailureReason() const {
+  return m_authFailureReason;
+}
+
+const String &ReplicationManager::GetSessionAuthFailureDetail() const {
+  return m_authFailureDetail;
+}
+
+void ReplicationManager::HandleHandshakeHello(HandshakeHelloPacket *packet,
+                                              int source) {
+  if (!m_owner.IsServer() || !m_owner.m_server) {
+    return;
+  }
+
+  if (packet->protocolVersion != SessionProtocol::Version) {
+    RejectPeer(source, DisconnectReason::VersionMismatch,
+               "Protocol version mismatch.");
+    return;
+  }
+
+  const SessionHostRequest &hostRequest = m_owner.GetLastHostRequest();
+  const String buildCompatibilityId = PacketStringToString(packet->buildCompatibilityId);
+  if (!hostRequest.buildCompatibilityId.empty() &&
+      buildCompatibilityId != hostRequest.buildCompatibilityId) {
+    RejectPeer(source, DisconnectReason::VersionMismatch,
+               "Build compatibility mismatch.");
+    return;
+  }
+
+  const String sessionId = PacketStringToString(packet->sessionId);
+  if (!hostRequest.sessionId.empty() && sessionId != hostRequest.sessionId) {
+    RejectPeer(source, DisconnectReason::SessionClosed,
+               "Session identifier mismatch.");
+    return;
+  }
+
+  if (hostRequest.requireJoinCredential) {
+    const String joinCredential = PacketStringToString(packet->joinCredential);
+    if (joinCredential.empty() || joinCredential != hostRequest.joinCredential) {
+      RejectPeer(source, DisconnectReason::AuthRejected,
+                 "Join credential rejected.");
+      return;
+    }
+  }
+
+  if (packet->requestedHostingMode != static_cast<uint>(HostingMode::Client)) {
+    RejectPeer(source, DisconnectReason::ProtocolError,
+               "Client requested incompatible hosting mode.");
+    return;
+  }
+
+  PeerHandshakeState &state = m_peerHandshakeStates[source];
+  if (state.authenticated) {
+    RejectPeer(source, DisconnectReason::ProtocolError,
+               "Peer is already authenticated.");
+    return;
+  }
+  state.challengeSent = true;
+  state.authenticated = false;
+  state.clientNonce = packet->clientNonce;
+  state.serverNonce = GenerateNonce();
+
+  HandshakeChallengePacket challenge;
+  challenge.clientNonce = state.clientNonce;
+  challenge.serverNonce = state.serverNonce;
+  m_owner.m_server->SendPacketToPeer(source, challenge, true);
+}
+
+void ReplicationManager::HandleHandshakeChallenge(HandshakeChallengePacket *packet) {
+  if (!m_owner.m_client || !m_handshakeStarted || m_localAuthFailed ||
+      m_localSessionAuthenticated) {
+    return;
+  }
+
+  if (packet->clientNonce != m_localClientNonce) {
+    RejectLocalSession(DisconnectReason::ProtocolError,
+                       "Handshake challenge nonce mismatch.");
+    return;
+  }
+
+  m_localServerNonce = packet->serverNonce;
+
+  HandshakeResponsePacket response;
+  response.clientNonce = m_localClientNonce;
+  response.serverNonce = m_localServerNonce;
+  m_owner.m_client->SendPacket(response, true);
+}
+
+void ReplicationManager::HandleHandshakeResponse(HandshakeResponsePacket *packet,
+                                                 int source) {
+  if (!m_owner.IsServer() || !m_owner.m_server) {
+    return;
+  }
+
+  auto it = m_peerHandshakeStates.find(source);
+  if (it == m_peerHandshakeStates.end() || !it->second.challengeSent) {
+    RejectPeer(source, DisconnectReason::ProtocolError,
+               "Unexpected handshake response.");
+    return;
+  }
+
+  PeerHandshakeState &state = it->second;
+  if (packet->clientNonce != state.clientNonce ||
+      packet->serverNonce != state.serverNonce) {
+    RejectPeer(source, DisconnectReason::AuthRejected,
+               "Handshake nonce validation failed.");
+    m_peerHandshakeStates.erase(it);
+    return;
+  }
+
+  state.authenticated = true;
+  m_owner.m_server->AddPeer(source);
+
+  HandshakeAcceptPacket accept;
+  accept.assignedPeerID = source;
+  CopyStringToPacketField(accept.sessionId, m_owner.GetActiveSession().sessionId);
+  CopyStringToPacketField(accept.buildCompatibilityId,
+                          m_owner.GetActiveSession().buildCompatibilityId);
+  m_owner.m_server->SendPacketToPeer(source, accept, true);
+
+  GamePacket connectedPacket;
+  connectedPacket.type = NetworkMessage::ClientConnected;
+  ReceivePacket(connectedPacket.type, &connectedPacket, source);
+}
+
+void ReplicationManager::HandleHandshakeAccept(HandshakeAcceptPacket *packet) {
+  if (!m_owner.m_client || !m_handshakeStarted || m_localAuthFailed) {
+    return;
+  }
+
+  const String acceptedSessionId = PacketStringToString(packet->sessionId);
+  if (!m_pendingJoinRequest.sessionId.empty() &&
+      acceptedSessionId != m_pendingJoinRequest.sessionId) {
+    RejectLocalSession(DisconnectReason::SessionClosed,
+                       "Server accepted a different session identifier.");
+    m_owner.m_client->Disconnect();
+    return;
+  }
+
+  const String acceptedBuildCompatibility =
+      PacketStringToString(packet->buildCompatibilityId);
+  if (!m_pendingJoinRequest.buildCompatibilityId.empty() &&
+      acceptedBuildCompatibility != m_pendingJoinRequest.buildCompatibilityId) {
+    RejectLocalSession(DisconnectReason::VersionMismatch,
+                       "Server accepted with mismatched build compatibility.");
+    m_owner.m_client->Disconnect();
+    return;
+  }
+
+  m_owner.m_client->SetPeerID(packet->assignedPeerID);
+  m_handshakeStarted = false;
+  m_localSessionAuthenticated = true;
+  m_localAuthFailed = false;
+  m_authFailureReason = DisconnectReason::None;
+  m_authFailureDetail.clear();
+}
+
+void ReplicationManager::HandleHandshakeReject(HandshakeRejectPacket *packet) {
+  RejectLocalSession(static_cast<DisconnectReason>(packet->reason),
+                     PacketStringToString(packet->detail));
+  if (m_owner.m_client) {
+    m_owner.m_client->Disconnect();
+  }
+}
+
 void ReplicationManager::ReceivePacket(int type, GamePacket *payload, int source) {
+  if (type == NetworkMessage::PeerDisconnected) {
+    m_peerHandshakeStates.erase(source);
+    m_peerLastAckedTick.erase(source);
+    return;
+  }
+
+  if (type == NetworkMessage::HandshakeHello) {
+    HandleHandshakeHello((HandshakeHelloPacket *)payload, source);
+    return;
+  }
+
+  if (type == NetworkMessage::HandshakeChallenge) {
+    HandleHandshakeChallenge((HandshakeChallengePacket *)payload);
+    return;
+  }
+
+  if (type == NetworkMessage::HandshakeResponse) {
+    HandleHandshakeResponse((HandshakeResponsePacket *)payload, source);
+    return;
+  }
+
+  if (type == NetworkMessage::HandshakeAccept) {
+    HandleHandshakeAccept((HandshakeAcceptPacket *)payload);
+    return;
+  }
+
+  if (type == NetworkMessage::HandshakeReject) {
+    HandleHandshakeReject((HandshakeRejectPacket *)payload);
+    return;
+  }
+
+  if (m_owner.IsServer() && source > 0 && !IsPeerAuthenticated(source)) {
+    RejectPeer(source, DisconnectReason::AuthRejected,
+               "Peer is not authenticated for replication traffic.");
+    return;
+  }
+
+  if (!m_owner.IsServer() && m_owner.m_client && !m_localSessionAuthenticated &&
+      type != NetworkMessage::Shutdown) {
+    RejectLocalSession(DisconnectReason::AuthRejected,
+                       "Received replication packet before authentication.");
+    return;
+  }
+
   if (type == NetworkMessage::Snapshot) {
     m_receiveStream.Clear();
 
@@ -558,6 +860,12 @@ void ReplicationManager::UpdateAsClient(float deltaTime) {
   }
 
   m_owner.m_client->UpdateClient();
+  if (!m_owner.m_client->GetIsConnected()) {
+    if (m_localSessionAuthenticated || m_handshakeStarted) {
+      ResetAuthenticationState();
+    }
+    return;
+  }
 
   m_clientUpdateTimer += deltaTime;
   if (m_clientUpdateTimer >= 0.05f) {

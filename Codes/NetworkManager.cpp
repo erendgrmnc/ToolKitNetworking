@@ -82,6 +82,9 @@ bool ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(
   if (ITransportPeer *client = m_client.get()) {
     bool isConnected = client->Connect(host, portNum);
     if (isConnected) {
+      client->RegisterPacketHandler(NetworkMessage::HandshakeChallenge, this);
+      client->RegisterPacketHandler(NetworkMessage::HandshakeAccept, this);
+      client->RegisterPacketHandler(NetworkMessage::HandshakeReject, this);
       client->RegisterPacketHandler(NetworkMessage::Snapshot, this);
       client->RegisterPacketHandler(NetworkMessage::Spawn, this);
       client->RegisterPacketHandler(NetworkMessage::Despawn, this);
@@ -120,7 +123,13 @@ bool ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
   }
 
   m_server->RegisterPacketHandler(
+      ToolKitNetworking::NetworkMessage::HandshakeHello, this);
+  m_server->RegisterPacketHandler(
+      ToolKitNetworking::NetworkMessage::HandshakeResponse, this);
+  m_server->RegisterPacketHandler(
       ToolKitNetworking::NetworkMessage::ClientConnected, this);
+  m_server->RegisterPacketHandler(
+      ToolKitNetworking::NetworkMessage::PeerDisconnected, this);
   m_server->RegisterPacketHandler(
       ToolKitNetworking::NetworkMessage::SnapshotAck, this);
   m_server->RegisterPacketHandler(ToolKitNetworking::NetworkMessage::RPC, this);
@@ -273,6 +282,40 @@ bool ToolKit::ToolKitNetworking::NetworkManager::IsClientTransportConnected() co
   return m_client != nullptr && m_client->GetIsConnected();
 }
 
+bool ToolKit::ToolKitNetworking::NetworkManager::BeginSessionHandshake(
+    const SessionJoinRequest &request) {
+  return m_replicationManager != nullptr &&
+         m_replicationManager->BeginSessionHandshake(request);
+}
+
+bool ToolKit::ToolKitNetworking::NetworkManager::IsSessionAuthenticated() const {
+  return m_replicationManager != nullptr &&
+         m_replicationManager->IsSessionAuthenticated();
+}
+
+bool ToolKit::ToolKitNetworking::NetworkManager::HasSessionAuthFailed() const {
+  return m_replicationManager != nullptr &&
+         m_replicationManager->HasSessionAuthFailed();
+}
+
+ToolKit::ToolKitNetworking::DisconnectReason
+ToolKit::ToolKitNetworking::NetworkManager::GetSessionAuthFailureReason() const {
+  if (!m_replicationManager) {
+    return DisconnectReason::None;
+  }
+
+  return m_replicationManager->GetSessionAuthFailureReason();
+}
+
+ToolKit::String
+ToolKit::ToolKitNetworking::NetworkManager::GetSessionAuthFailureDetail() const {
+  if (!m_replicationManager) {
+    return {};
+  }
+
+  return m_replicationManager->GetSessionAuthFailureDetail();
+}
+
 ToolKit::ToolKitNetworking::ConnectionStatus
 ToolKit::ToolKitNetworking::NetworkManager::GetConnectionStatus() const {
   if (m_sessionManager) {
@@ -293,6 +336,36 @@ ToolKit::ToolKitNetworking::NetworkManager::GetHostingMode() const {
   }
 
   return HostingMode::None;
+}
+
+const ToolKit::ToolKitNetworking::SessionDescriptor &
+ToolKit::ToolKitNetworking::NetworkManager::GetActiveSession() const {
+  static const SessionDescriptor emptySession;
+  if (!m_sessionManager) {
+    return emptySession;
+  }
+
+  return m_sessionManager->GetActiveSession();
+}
+
+const ToolKit::ToolKitNetworking::SessionHostRequest &
+ToolKit::ToolKitNetworking::NetworkManager::GetLastHostRequest() const {
+  static const SessionHostRequest emptyHostRequest;
+  if (!m_sessionManager) {
+    return emptyHostRequest;
+  }
+
+  return m_sessionManager->GetLastHostRequest();
+}
+
+const ToolKit::ToolKitNetworking::SessionJoinRequest &
+ToolKit::ToolKitNetworking::NetworkManager::GetLastJoinRequest() const {
+  static const SessionJoinRequest emptyJoinRequest;
+  if (!m_sessionManager) {
+    return emptyJoinRequest;
+  }
+
+  return m_sessionManager->GetLastJoinRequest();
 }
 
 void ToolKit::ToolKitNetworking::NetworkManager::SendRPCPacket(

@@ -16,7 +16,13 @@ enum NetworkMessage {
   Spawn,
   Despawn,
   ClientUpdate,
-  ClientInit
+  ClientInit,
+  HandshakeHello,
+  HandshakeChallenge,
+  HandshakeResponse,
+  HandshakeAccept,
+  HandshakeReject,
+  PeerDisconnected
 };
 
 enum class NetworkProperty : unsigned char {
@@ -68,6 +74,76 @@ struct ClientInitPacket : public GamePacket {
     type = NetworkMessage::ClientInit;
     size = sizeof(int);
     assignedPeerID = -1;
+  }
+};
+
+struct HandshakeHelloPacket : public GamePacket {
+  uint protocolVersion;
+  uint requestedHostingMode;
+  uint64_t clientNonce;
+  char sessionId[64];
+  char joinCredential[64];
+  char buildCompatibilityId[64];
+
+  HandshakeHelloPacket() {
+    type = NetworkMessage::HandshakeHello;
+    size = sizeof(HandshakeHelloPacket) - sizeof(GamePacket);
+    protocolVersion = 0;
+    requestedHostingMode = 0;
+    clientNonce = 0;
+    std::memset(sessionId, 0, sizeof(sessionId));
+    std::memset(joinCredential, 0, sizeof(joinCredential));
+    std::memset(buildCompatibilityId, 0, sizeof(buildCompatibilityId));
+  }
+};
+
+struct HandshakeChallengePacket : public GamePacket {
+  uint64_t clientNonce;
+  uint64_t serverNonce;
+
+  HandshakeChallengePacket() {
+    type = NetworkMessage::HandshakeChallenge;
+    size = sizeof(HandshakeChallengePacket) - sizeof(GamePacket);
+    clientNonce = 0;
+    serverNonce = 0;
+  }
+};
+
+struct HandshakeResponsePacket : public GamePacket {
+  uint64_t clientNonce;
+  uint64_t serverNonce;
+
+  HandshakeResponsePacket() {
+    type = NetworkMessage::HandshakeResponse;
+    size = sizeof(HandshakeResponsePacket) - sizeof(GamePacket);
+    clientNonce = 0;
+    serverNonce = 0;
+  }
+};
+
+struct HandshakeAcceptPacket : public GamePacket {
+  int assignedPeerID;
+  char sessionId[64];
+  char buildCompatibilityId[64];
+
+  HandshakeAcceptPacket() {
+    type = NetworkMessage::HandshakeAccept;
+    size = sizeof(HandshakeAcceptPacket) - sizeof(GamePacket);
+    assignedPeerID = -1;
+    std::memset(sessionId, 0, sizeof(sessionId));
+    std::memset(buildCompatibilityId, 0, sizeof(buildCompatibilityId));
+  }
+};
+
+struct HandshakeRejectPacket : public GamePacket {
+  int reason;
+  char detail[128];
+
+  HandshakeRejectPacket() {
+    type = NetworkMessage::HandshakeReject;
+    size = sizeof(HandshakeRejectPacket) - sizeof(GamePacket);
+    reason = 0;
+    std::memset(detail, 0, sizeof(detail));
   }
 };
 

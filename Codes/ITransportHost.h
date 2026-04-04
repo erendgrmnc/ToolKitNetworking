@@ -18,6 +18,8 @@ public:
   virtual bool SendGlobalPacket(int messageID) const = 0;
   virtual bool SendPacketToPeer(TransportPeerId peerID, GamePacket &packet,
                                 bool reliable = false) const = 0;
+  virtual void AddPeer(TransportPeerId peerID) = 0;
+  virtual void RemovePeer(TransportPeerId peerID) = 0;
   virtual int GetConnectedPeerCount() const = 0;
   virtual const std::vector<TransportPeerId> &GetConnectedPeers() const = 0;
   virtual std::string GetIpAddress() const = 0;

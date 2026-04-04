@@ -99,11 +99,13 @@ struct SessionHostRequest {
   NetworkEndpoint bindEndpoint;
   NetworkEndpoint advertisedEndpoint;
   String sessionId;
+  String joinCredential;
   String buildCompatibilityId;
   uint maxClients = 2;
   bool enableLanDiscovery = false;
   bool enableRelayFallback = false;
   bool allowDirectHostedConnections = true;
+  bool requireJoinCredential = false;
 };
 
 struct ConnectionStatus {

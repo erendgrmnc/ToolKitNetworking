@@ -58,6 +58,9 @@ public:
   void Stop();
   ConnectionStatus GetConnectionStatus() const;
   HostingMode GetHostingMode() const;
+  const SessionDescriptor &GetActiveSession() const;
+  const SessionHostRequest &GetLastHostRequest() const;
+  const SessionJoinRequest &GetLastJoinRequest() const;
 
   static NetworkSpawnService &GetSpawnService();
 
@@ -92,6 +95,11 @@ public:
   bool HasServerTransport() const override;
   bool HasClientTransport() const override;
   bool IsClientTransportConnected() const override;
+  bool BeginSessionHandshake(const SessionJoinRequest &request) override;
+  bool IsSessionAuthenticated() const override;
+  bool HasSessionAuthFailed() const override;
+  DisconnectReason GetSessionAuthFailureReason() const override;
+  String GetSessionAuthFailureDetail() const override;
 
   void SendRPCPacket(PacketStream &rpcStream, RPCReceiver target, int ownerID);
 

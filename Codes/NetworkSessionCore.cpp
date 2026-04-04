@@ -116,10 +116,13 @@ SessionCore::BuildHostRequest(const SessionBootstrapConfig &config,
   request.advertisedEndpoint.protocol = TransportProtocol::EnetUdp;
   request.advertisedEndpoint.host = config.advertisedAddress;
   request.advertisedEndpoint.port = request.bindEndpoint.port;
+  request.sessionId = config.sessionId;
+  request.joinCredential = config.joinCredential;
   request.buildCompatibilityId =
       config.buildCompatibilityId.empty() ? BuildCompatibilityId()
                                           : config.buildCompatibilityId;
   request.maxClients = config.maxClients;
+  request.requireJoinCredential = config.requireJoinCredential;
   return request;
 }
 
@@ -134,6 +137,8 @@ SessionCore::BuildJoinRequest(const SessionBootstrapConfig &config,
       overrides.hasConnectHostOverride ? overrides.connectHost : config.connectHost;
   request.targetEndpoint.port =
       overrides.hasPortOverride ? overrides.port : config.connectPort;
+  request.sessionId = config.sessionId;
+  request.joinCredential = config.joinCredential;
   request.buildCompatibilityId =
       config.buildCompatibilityId.empty() ? BuildCompatibilityId()
                                           : config.buildCompatibilityId;

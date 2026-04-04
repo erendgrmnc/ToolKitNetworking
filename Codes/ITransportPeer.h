@@ -13,6 +13,7 @@ public:
   virtual bool UpdateClient() = 0;
   virtual bool GetIsConnected() const = 0;
   virtual TransportPeerId GetPeerID() const = 0;
+  virtual void SetPeerID(TransportPeerId peerID) = 0;
   virtual void SendPacket(GamePacket &payload, bool reliable = false) = 0;
   virtual void Disconnect() = 0;
   virtual std::string GetIPAddress() = 0;

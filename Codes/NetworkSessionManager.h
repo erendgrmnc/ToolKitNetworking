@@ -46,5 +46,6 @@ private:
   SessionHostRequest m_lastHostRequest;
   SessionJoinRequest m_lastJoinRequest;
   uint64_t m_connectionAttemptStartedAtMs = 0;
+  uint64_t m_handshakeStartedAtMs = 0;
 };
 } // namespace ToolKit::ToolKitNetworking
