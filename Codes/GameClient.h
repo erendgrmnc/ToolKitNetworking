@@ -16,6 +16,7 @@ namespace ToolKit::ToolKitNetworking {
 		bool GetIsConnected() const override;
 
 		TransportPeerId GetPeerID() const override;
+		void SetPeerID(TransportPeerId peerID) override;
 
 
 		void SendPacket(GamePacket& payload, bool reliable = false) override;

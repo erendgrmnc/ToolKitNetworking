@@ -34,7 +34,6 @@ bool ToolKit::ToolKitNetworking::GameClient::UpdateClient() {
   ENetEvent event;
   while (enet_host_service(m_netHandle, &event, 0) > 0) {
     if (event.type == ENET_EVENT_TYPE_CONNECT) {
-      m_PeerId = m_netPeer->outgoingPeerID + 1;
       m_isConnected = true;
 
       for (const auto &callback : m_onClientConnectedToServer) {
@@ -42,6 +41,10 @@ bool ToolKit::ToolKitNetworking::GameClient::UpdateClient() {
       }
 
       SendClientInitPacket();
+    } else if (event.type == ENET_EVENT_TYPE_DISCONNECT) {
+      m_isConnected = false;
+      m_netPeer = nullptr;
+      m_PeerId = -1;
     } else if (event.type == ENET_EVENT_TYPE_RECEIVE) {
       GamePacket *packet = (GamePacket *)event.packet->data;
 
@@ -73,6 +76,10 @@ bool ToolKit::ToolKitNetworking::GameClient::GetIsConnected() const {
 ToolKit::ToolKitNetworking::TransportPeerId
 ToolKit::ToolKitNetworking::GameClient::GetPeerID() const {
   return m_PeerId;
+}
+
+void ToolKit::ToolKitNetworking::GameClient::SetPeerID(TransportPeerId peerID) {
+  m_PeerId = peerID;
 }
 
 void ToolKit::ToolKitNetworking::GameClient::SendPacket(GamePacket &payload,
