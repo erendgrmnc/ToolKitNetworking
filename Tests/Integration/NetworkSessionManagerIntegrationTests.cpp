@@ -16,6 +16,7 @@ TEST(NetworkSessionManagerIntegrationTest, DedicatedServerStartsServerOnly) {
   EXPECT_EQ(runtime.startServerCalls, 1);
   EXPECT_EQ(runtime.startClientCalls, 0);
   EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Connected);
+  EXPECT_TRUE(manager.GetConnectionStatus().isAuthenticated);
 }
 
 TEST(NetworkSessionManagerIntegrationTest, ClientTransitionsToConnectedAfterTransportConnect) {
@@ -31,7 +32,12 @@ TEST(NetworkSessionManagerIntegrationTest, ClientTransitionsToConnectedAfterTran
   EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Connecting);
   runtime.clientConnected = true;
   manager.Update();
+  EXPECT_EQ(runtime.beginHandshakeCalls, 1);
+  EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Handshaking);
+  runtime.sessionAuthenticated = true;
+  manager.Update();
   EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Connected);
+  EXPECT_TRUE(manager.GetConnectionStatus().isAuthenticated);
 }
 
 TEST(NetworkSessionManagerIntegrationTest, ListenServerStartsServerAndClient) {
@@ -49,7 +55,11 @@ TEST(NetworkSessionManagerIntegrationTest, ListenServerStartsServerAndClient) {
   EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Connecting);
   runtime.clientConnected = true;
   manager.Update();
+  EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Handshaking);
+  runtime.sessionAuthenticated = true;
+  manager.Update();
   EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Connected);
+  EXPECT_TRUE(manager.GetConnectionStatus().isAuthenticated);
 }
 
 TEST(NetworkSessionManagerIntegrationTest, OverridesAreAppliedToTransportRequests) {
@@ -68,6 +78,43 @@ TEST(NetworkSessionManagerIntegrationTest, OverridesAreAppliedToTransportRequest
   ASSERT_TRUE(manager.StartConfiguredSession());
   EXPECT_EQ(runtime.lastClientHost, "10.10.1.12");
   EXPECT_EQ(runtime.lastClientPort, 9001);
+}
+
+TEST(NetworkSessionManagerIntegrationTest, ConnectedTransportTransitionsToHandshaking) {
+  FakeSessionRuntime runtime;
+  runtime.configuredHostingMode = HostingMode::Client;
+
+  NetworkSessionManager manager(runtime, []() {
+    return CommandLineSessionOverrides{};
+  });
+
+  ASSERT_TRUE(manager.StartConfiguredSession());
+  runtime.clientConnected = true;
+  manager.Update();
+
+  EXPECT_EQ(runtime.beginHandshakeCalls, 1);
+  EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Handshaking);
+}
+
+TEST(NetworkSessionManagerIntegrationTest, HandshakeRejectTransitionsToFailed) {
+  FakeSessionRuntime runtime;
+  runtime.configuredHostingMode = HostingMode::Client;
+
+  NetworkSessionManager manager(runtime, []() {
+    return CommandLineSessionOverrides{};
+  });
+
+  ASSERT_TRUE(manager.StartConfiguredSession());
+  runtime.clientConnected = true;
+  manager.Update();
+  runtime.sessionAuthFailed = true;
+  runtime.authFailureReason = DisconnectReason::AuthRejected;
+  runtime.authFailureDetail = "Join credential rejected.";
+  manager.Update();
+
+  EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Failed);
+  EXPECT_EQ(manager.GetConnectionStatus().disconnectReason,
+            DisconnectReason::AuthRejected);
 }
 
 TEST(NetworkSessionManagerIntegrationTest, ClientConnectTimeoutTransitionsToFailed) {
