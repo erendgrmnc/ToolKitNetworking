@@ -115,6 +115,101 @@ public:
     return result;
   }
 };
+
+struct SessionDirectoryLifecycleState {
+  String registrationHandle = "managed-registration";
+  uint64_t registrationExpiresAtMs = 60000;
+  int refreshCalls = 0;
+  int releaseCalls = 0;
+  int remainingReleaseFailures = 0;
+  bool failRefresh = false;
+  DisconnectReason refreshFailureReason = DisconnectReason::TransportError;
+  String refreshFailureDetail = "Refresh rejected.";
+  DisconnectReason releaseFailureReason = DisconnectReason::TransportError;
+  String releaseFailureDetail = "Release rejected.";
+};
+
+class ManagedSessionDirectoryBootstrapProvider : public ISessionBootstrapProvider {
+public:
+  explicit ManagedSessionDirectoryBootstrapProvider(
+      std::shared_ptr<SessionDirectoryLifecycleState> state)
+      : m_state(std::move(state)) {}
+
+  JoinMethod GetJoinMethod() const override {
+    return JoinMethod::SessionDirectory;
+  }
+
+  BootstrapHostResult
+  PrepareHostSession(const SessionHostRequest &request) const override {
+    BootstrapHostResult result;
+    result.success = true;
+    result.request = request;
+    result.request.sessionId = request.sessionId.empty() ? "managed-session"
+                                                         : request.sessionId;
+    result.request.joinCredential =
+        request.joinCredential.empty() ? "managed-secret" : request.joinCredential;
+    result.request.directoryRegistrationHandle = m_state->registrationHandle;
+    result.request.directoryRegistrationExpiresAtMs =
+        m_state->registrationExpiresAtMs;
+    result.request.requireJoinCredential = true;
+    result.session.sessionId = result.request.sessionId;
+    result.session.hostingMode = request.hostingMode;
+    result.session.joinMethod = JoinMethod::SessionDirectory;
+    result.session.bindEndpoint = request.bindEndpoint;
+    result.session.advertisedEndpoint = request.advertisedEndpoint;
+    result.session.resolvedEndpoint = request.advertisedEndpoint;
+    result.session.buildCompatibilityId = request.buildCompatibilityId;
+    result.session.isJoinCredentialRequired = true;
+    return result;
+  }
+
+  BootstrapJoinResult ResolveJoinSession(const SessionJoinRequest &request,
+                                         HostingMode hostingMode) const override {
+    BootstrapJoinResult result;
+    result.success = true;
+    result.request = request;
+    result.session.sessionId = request.sessionId;
+    result.session.hostingMode = hostingMode;
+    result.session.joinMethod = JoinMethod::SessionDirectory;
+    result.session.resolvedEndpoint = request.targetEndpoint;
+    result.session.buildCompatibilityId = request.buildCompatibilityId;
+    result.session.isJoinCredentialRequired = !request.joinCredential.empty();
+    return result;
+  }
+
+  HostedSessionRefreshResult RefreshHostedSession(
+      const SessionHostRequest &) override {
+    ++m_state->refreshCalls;
+    HostedSessionRefreshResult result;
+    if (m_state->failRefresh) {
+      result.success = false;
+      result.disconnectReason = m_state->refreshFailureReason;
+      result.detailMessage = m_state->refreshFailureDetail;
+      return result;
+    }
+
+    m_state->registrationExpiresAtMs += 60000;
+    result.registrationExpiresAtMs = m_state->registrationExpiresAtMs;
+    return result;
+  }
+
+  HostedSessionReleaseResult ReleaseHostedSession(
+      const SessionHostRequest &) override {
+    ++m_state->releaseCalls;
+    if (m_state->remainingReleaseFailures > 0) {
+      --m_state->remainingReleaseFailures;
+      HostedSessionReleaseResult result;
+      result.success = false;
+      result.disconnectReason = m_state->releaseFailureReason;
+      result.detailMessage = m_state->releaseFailureDetail;
+      return result;
+    }
+    return HostedSessionReleaseResult{};
+  }
+
+private:
+  std::shared_ptr<SessionDirectoryLifecycleState> m_state;
+};
 } // namespace
 
 TEST(NetworkSessionManagerIntegrationTest, DedicatedServerStartsServerOnly) {
@@ -229,6 +324,8 @@ TEST(NetworkSessionManagerIntegrationTest, UnsupportedBootstrapMethodFailsBefore
 }
 
 TEST(NetworkSessionManagerIntegrationTest, SessionDirectoryHostRegistersAndClientResolvesSession) {
+  SessionDirectoryServicePtr sharedDirectory =
+      CreateProcessLocalSessionDirectoryService();
   FakeSessionRuntime hostRuntime;
   hostRuntime.configuredHostingMode = HostingMode::DedicatedServer;
   hostRuntime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
@@ -240,11 +337,14 @@ TEST(NetworkSessionManagerIntegrationTest, SessionDirectoryHostRegistersAndClien
 
   NetworkSessionManager hostManager(hostRuntime, []() {
     return CommandLineSessionOverrides{};
+  }, {}, [sharedDirectory](JoinMethod joinMethod) mutable {
+    return CreateBootstrapProvider(joinMethod, sharedDirectory);
   });
 
   ASSERT_TRUE(hostManager.StartConfiguredSession());
   ASSERT_FALSE(hostManager.GetLastHostRequest().sessionId.empty());
   ASSERT_FALSE(hostManager.GetLastHostRequest().joinCredential.empty());
+  ASSERT_FALSE(hostManager.GetLastHostRequest().directoryRegistrationHandle.empty());
   EXPECT_TRUE(hostManager.GetLastHostRequest().requireJoinCredential);
   EXPECT_EQ(hostManager.GetActiveSession().advertisedEndpoint.host,
             "directory.example.net");
@@ -258,6 +358,8 @@ TEST(NetworkSessionManagerIntegrationTest, SessionDirectoryHostRegistersAndClien
 
   NetworkSessionManager clientManager(clientRuntime, []() {
     return CommandLineSessionOverrides{};
+  }, {}, [sharedDirectory](JoinMethod joinMethod) mutable {
+    return CreateBootstrapProvider(joinMethod, sharedDirectory);
   });
 
   ASSERT_TRUE(clientManager.StartConfiguredSession());
@@ -269,6 +371,8 @@ TEST(NetworkSessionManagerIntegrationTest, SessionDirectoryHostRegistersAndClien
             hostManager.GetLastHostRequest().joinCredential);
   EXPECT_EQ(clientManager.GetActiveSession().joinMethod,
             JoinMethod::SessionDirectory);
+  EXPECT_EQ(clientManager.GetActiveSession().hostingMode,
+            HostingMode::DedicatedServer);
 }
 
 TEST(NetworkSessionManagerIntegrationTest, SessionDirectoryUnknownSessionFailsBeforeTransportStart) {
@@ -286,6 +390,345 @@ TEST(NetworkSessionManagerIntegrationTest, SessionDirectoryUnknownSessionFailsBe
   EXPECT_EQ(manager.GetConnectionStatus().bootstrapFailureReason,
             DisconnectReason::SessionClosed);
   EXPECT_EQ(runtime.startClientCalls, 0);
+}
+
+TEST(NetworkSessionManagerIntegrationTest, SessionDirectoryBuildMismatchFailsBeforeTransportStart) {
+  SessionDirectoryServicePtr sharedDirectory =
+      CreateProcessLocalSessionDirectoryService();
+  FakeSessionRuntime hostRuntime;
+  hostRuntime.configuredHostingMode = HostingMode::DedicatedServer;
+  hostRuntime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  hostRuntime.configuredBootstrapConfig.listenPort = 7778;
+  hostRuntime.configuredBootstrapConfig.bindAddress = "192.168.1.21";
+  hostRuntime.configuredBootstrapConfig.advertisedAddress =
+      "directory.example.net";
+  hostRuntime.configuredBootstrapConfig.buildCompatibilityId = "build-dir-host";
+
+  NetworkSessionManager hostManager(hostRuntime, []() {
+    return CommandLineSessionOverrides{};
+  }, {}, [sharedDirectory](JoinMethod joinMethod) mutable {
+    return CreateBootstrapProvider(joinMethod, sharedDirectory);
+  });
+
+  ASSERT_TRUE(hostManager.StartConfiguredSession());
+
+  FakeSessionRuntime clientRuntime;
+  clientRuntime.configuredHostingMode = HostingMode::Client;
+  clientRuntime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  clientRuntime.configuredBootstrapConfig.sessionId =
+      hostManager.GetLastHostRequest().sessionId;
+  clientRuntime.configuredBootstrapConfig.buildCompatibilityId =
+      "build-dir-client";
+
+  NetworkSessionManager clientManager(clientRuntime, []() {
+    return CommandLineSessionOverrides{};
+  }, {}, [sharedDirectory](JoinMethod joinMethod) mutable {
+    return CreateBootstrapProvider(joinMethod, sharedDirectory);
+  });
+
+  EXPECT_FALSE(clientManager.StartConfiguredSession());
+  EXPECT_EQ(clientManager.GetConnectionStatus().state, ConnectionState::Failed);
+  EXPECT_EQ(clientManager.GetConnectionStatus().bootstrapFailureReason,
+            DisconnectReason::VersionMismatch);
+  EXPECT_EQ(clientRuntime.startClientCalls, 0);
+}
+
+TEST(NetworkSessionManagerIntegrationTest, SessionDirectoryHostedRegistrationRefreshesBeforeExpiry) {
+  FakeSessionRuntime runtime;
+  ManualClock clock;
+  auto state = std::make_shared<SessionDirectoryLifecycleState>();
+  state->registrationExpiresAtMs = 60000;
+  runtime.configuredHostingMode = HostingMode::DedicatedServer;
+  runtime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  runtime.configuredBootstrapConfig.listenPort = 7780;
+  runtime.configuredBootstrapConfig.advertisedAddress = "directory.example.net";
+
+  NetworkSessionManager manager(
+      runtime, []() { return CommandLineSessionOverrides{}; },
+      [&clock]() { return clock.NowMs(); },
+      [state](JoinMethod joinMethod) -> SessionBootstrapProviderPtr {
+        if (joinMethod == JoinMethod::SessionDirectory) {
+          return std::make_unique<ManagedSessionDirectoryBootstrapProvider>(state);
+        }
+        return CreateBootstrapProvider(joinMethod);
+      });
+
+  ASSERT_TRUE(manager.StartConfiguredSession());
+  EXPECT_EQ(manager.GetLastHostRequest().directoryRegistrationExpiresAtMs, 60000u);
+
+  clock.SetNowMs(29999);
+  manager.Update();
+  EXPECT_EQ(state->refreshCalls, 0);
+
+  clock.SetNowMs(30000);
+  manager.Update();
+  EXPECT_EQ(state->refreshCalls, 1);
+  EXPECT_EQ(manager.GetLastHostRequest().directoryRegistrationExpiresAtMs,
+            120000u);
+}
+
+TEST(NetworkSessionManagerIntegrationTest, SessionDirectoryHostedRefreshFailureStopsAndReleasesSession) {
+  FakeSessionRuntime runtime;
+  ManualClock clock;
+  auto state = std::make_shared<SessionDirectoryLifecycleState>();
+  state->registrationExpiresAtMs = 30000;
+  state->failRefresh = true;
+  state->refreshFailureReason = DisconnectReason::Timeout;
+  state->refreshFailureDetail = "Directory lease refresh timed out.";
+  runtime.configuredHostingMode = HostingMode::DedicatedServer;
+  runtime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  runtime.configuredBootstrapConfig.listenPort = 7781;
+  runtime.configuredBootstrapConfig.advertisedAddress = "directory.example.net";
+
+  NetworkSessionManager manager(
+      runtime, []() { return CommandLineSessionOverrides{}; },
+      [&clock]() { return clock.NowMs(); },
+      [state](JoinMethod joinMethod) -> SessionBootstrapProviderPtr {
+        if (joinMethod == JoinMethod::SessionDirectory) {
+          return std::make_unique<ManagedSessionDirectoryBootstrapProvider>(state);
+        }
+        return CreateBootstrapProvider(joinMethod);
+      });
+
+  ASSERT_TRUE(manager.StartConfiguredSession());
+
+  clock.SetNowMs(15000);
+  manager.Update();
+
+  EXPECT_EQ(state->refreshCalls, 1);
+  EXPECT_EQ(state->releaseCalls, 1);
+  EXPECT_EQ(runtime.stopCalls, 1);
+  EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Failed);
+  EXPECT_EQ(manager.GetConnectionStatus().bootstrapFailureReason,
+            DisconnectReason::Timeout);
+}
+
+TEST(NetworkSessionManagerIntegrationTest, StopSessionUnregistersHostedSessionDirectoryRegistration) {
+  FakeSessionRuntime runtime;
+  auto state = std::make_shared<SessionDirectoryLifecycleState>();
+  runtime.configuredHostingMode = HostingMode::DedicatedServer;
+  runtime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  runtime.configuredBootstrapConfig.listenPort = 7782;
+  runtime.configuredBootstrapConfig.advertisedAddress = "directory.example.net";
+
+  NetworkSessionManager manager(
+      runtime, []() { return CommandLineSessionOverrides{}; }, {},
+      [state](JoinMethod joinMethod) -> SessionBootstrapProviderPtr {
+        if (joinMethod == JoinMethod::SessionDirectory) {
+          return std::make_unique<ManagedSessionDirectoryBootstrapProvider>(state);
+        }
+        return CreateBootstrapProvider(joinMethod);
+      });
+
+  ASSERT_TRUE(manager.StartConfiguredSession());
+
+  manager.StopSession();
+
+  EXPECT_EQ(state->releaseCalls, 1);
+  EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Disconnected);
+  EXPECT_TRUE(manager.GetLastHostRequest().directoryRegistrationHandle.empty());
+}
+
+TEST(NetworkSessionManagerIntegrationTest,
+     StopSessionRetryableReleaseFailureBlocksNextStartUntilReleaseSucceeds) {
+  FakeSessionRuntime runtime;
+  ManualClock clock;
+  auto state = std::make_shared<SessionDirectoryLifecycleState>();
+  state->remainingReleaseFailures = 3;
+  state->releaseFailureReason = DisconnectReason::TransportError;
+  state->releaseFailureDetail = "Directory unregister transport failed.";
+  runtime.configuredHostingMode = HostingMode::DedicatedServer;
+  runtime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  runtime.configuredBootstrapConfig.listenPort = 7783;
+  runtime.configuredBootstrapConfig.advertisedAddress = "directory.example.net";
+
+  NetworkSessionManager manager(
+      runtime, []() { return CommandLineSessionOverrides{}; },
+      [&clock]() { return clock.NowMs(); },
+      [state](JoinMethod joinMethod) -> SessionBootstrapProviderPtr {
+        if (joinMethod == JoinMethod::SessionDirectory) {
+          return std::make_unique<ManagedSessionDirectoryBootstrapProvider>(state);
+        }
+        return CreateBootstrapProvider(joinMethod);
+      });
+
+  ASSERT_TRUE(manager.StartConfiguredSession());
+
+  manager.StopSession();
+  EXPECT_EQ(state->releaseCalls, 1);
+  EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Disconnected);
+  EXPECT_NE(manager.GetConnectionStatus().detailMessage.find("Directory unregister transport failed."),
+            String::npos);
+
+  clock.SetNowMs(4999);
+  manager.Update();
+  EXPECT_EQ(state->releaseCalls, 1);
+
+  clock.SetNowMs(5000);
+  manager.Update();
+  EXPECT_EQ(state->releaseCalls, 2);
+
+  EXPECT_FALSE(manager.StartConfiguredSession());
+  EXPECT_EQ(state->releaseCalls, 3);
+  EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Failed);
+  EXPECT_EQ(manager.GetConnectionStatus().bootstrapFailureReason,
+            DisconnectReason::BootstrapFailed);
+  EXPECT_NE(manager.GetConnectionStatus().bootstrapDetail.find("Directory unregister transport failed."),
+            String::npos);
+
+  ASSERT_TRUE(manager.StartConfiguredSession());
+  EXPECT_EQ(state->releaseCalls, 4);
+  EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Connected);
+}
+
+TEST(NetworkSessionManagerIntegrationTest,
+     StartupReplacementAlsoAbortsOnTerminalReleaseFailure) {
+  FakeSessionRuntime runtime;
+  auto state = std::make_shared<SessionDirectoryLifecycleState>();
+  state->remainingReleaseFailures = 1;
+  state->releaseFailureReason = DisconnectReason::ProtocolError;
+  state->releaseFailureDetail = "Directory unregister response was malformed.";
+  runtime.configuredHostingMode = HostingMode::DedicatedServer;
+  runtime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  runtime.configuredBootstrapConfig.listenPort = 7787;
+  runtime.configuredBootstrapConfig.advertisedAddress = "directory.example.net";
+
+  NetworkSessionManager manager(
+      runtime, []() { return CommandLineSessionOverrides{}; }, {},
+      [state](JoinMethod joinMethod) -> SessionBootstrapProviderPtr {
+        if (joinMethod == JoinMethod::SessionDirectory) {
+          return std::make_unique<ManagedSessionDirectoryBootstrapProvider>(state);
+        }
+        return CreateBootstrapProvider(joinMethod);
+      });
+
+  ASSERT_TRUE(manager.StartConfiguredSession());
+  manager.StopSession();
+  EXPECT_EQ(state->releaseCalls, 1);
+
+  EXPECT_FALSE(manager.StartConfiguredSession());
+  EXPECT_EQ(state->releaseCalls, 1);
+  EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Failed);
+  EXPECT_EQ(manager.GetConnectionStatus().bootstrapFailureReason,
+            DisconnectReason::BootstrapFailed);
+  EXPECT_NE(manager.GetConnectionStatus().bootstrapDetail.find("malformed"),
+            String::npos);
+  EXPECT_EQ(state->releaseCalls, 1);
+
+  EXPECT_FALSE(manager.StartConfiguredSession());
+  EXPECT_EQ(state->releaseCalls, 1);
+  EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Failed);
+  EXPECT_EQ(manager.GetConnectionStatus().bootstrapFailureReason,
+            DisconnectReason::BootstrapFailed);
+}
+
+TEST(NetworkSessionManagerIntegrationTest,
+     NetworkSessionManagerDestructorReleasesHostedSessionRegistration) {
+  FakeSessionRuntime runtime;
+  auto state = std::make_shared<SessionDirectoryLifecycleState>();
+  runtime.configuredHostingMode = HostingMode::DedicatedServer;
+  runtime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  runtime.configuredBootstrapConfig.listenPort = 7784;
+  runtime.configuredBootstrapConfig.advertisedAddress = "directory.example.net";
+
+  {
+    NetworkSessionManager manager(
+        runtime, []() { return CommandLineSessionOverrides{}; }, {},
+        [state](JoinMethod joinMethod) -> SessionBootstrapProviderPtr {
+          if (joinMethod == JoinMethod::SessionDirectory) {
+            return std::make_unique<ManagedSessionDirectoryBootstrapProvider>(state);
+          }
+          return CreateBootstrapProvider(joinMethod);
+        });
+
+    ASSERT_TRUE(manager.StartConfiguredSession());
+  }
+
+  EXPECT_EQ(state->releaseCalls, 1);
+}
+
+TEST(NetworkSessionManagerIntegrationTest,
+     DefaultSessionDirectoryProviderSupportsZeroConfigLocalInterop) {
+  FakeSessionRuntime hostRuntime;
+  hostRuntime.configuredHostingMode = HostingMode::DedicatedServer;
+  hostRuntime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  hostRuntime.configuredBootstrapConfig.listenPort = 7785;
+  hostRuntime.configuredBootstrapConfig.advertisedAddress = "directory.example.net";
+  hostRuntime.configuredBootstrapConfig.sessionId = "default-shared-session";
+
+  NetworkSessionManager hostManager(hostRuntime, []() {
+    return CommandLineSessionOverrides{};
+  });
+  ASSERT_TRUE(hostManager.StartConfiguredSession());
+
+  FakeSessionRuntime clientRuntime;
+  clientRuntime.configuredHostingMode = HostingMode::Client;
+  clientRuntime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  clientRuntime.configuredBootstrapConfig.sessionId =
+      hostManager.GetActiveSession().sessionId;
+
+  NetworkSessionManager clientManager(clientRuntime, []() {
+    return CommandLineSessionOverrides{};
+  });
+  ASSERT_TRUE(clientManager.StartConfiguredSession());
+
+  EXPECT_EQ(clientRuntime.startClientCalls, 1);
+  EXPECT_EQ(clientManager.GetActiveSession().sessionId,
+            hostManager.GetActiveSession().sessionId);
+
+  hostManager.StopSession();
+}
+
+TEST(NetworkSessionManagerIntegrationTest,
+     SessionDirectoryExpiredCredentialSurfacesAuthRejectedBootstrapFailure) {
+  FakeSessionRuntime hostRuntime;
+  FakeSessionRuntime clientRuntime;
+  ManualClock clock;
+  clock.SetNowMs(1000);
+  SessionDirectoryServicePtr sharedDirectory =
+      CreateProcessLocalSessionDirectoryService([&clock]() { return clock.NowMs(); });
+
+  hostRuntime.configuredHostingMode = HostingMode::DedicatedServer;
+  hostRuntime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  hostRuntime.configuredBootstrapConfig.listenPort = 7786;
+  hostRuntime.configuredBootstrapConfig.advertisedAddress = "directory.example.net";
+  hostRuntime.configuredBootstrapConfig.sessionId = "expiring-session";
+
+  NetworkSessionManager hostManager(
+      hostRuntime, []() { return CommandLineSessionOverrides{}; }, {},
+      [sharedDirectory](JoinMethod joinMethod) -> SessionBootstrapProviderPtr {
+        return CreateBootstrapProvider(joinMethod, sharedDirectory);
+      });
+
+  ASSERT_TRUE(hostManager.StartConfiguredSession());
+  SessionDirectoryLookupRequest lookup;
+  lookup.sessionId = hostManager.GetActiveSession().sessionId;
+  const SessionDirectoryLookupResult lookupResult =
+      sharedDirectory->LookupSession(lookup);
+  ASSERT_TRUE(lookupResult.success);
+  clock.SetNowMs(lookupResult.joinCredentialExpiresAtMs);
+
+  clientRuntime.configuredHostingMode = HostingMode::Client;
+  clientRuntime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  clientRuntime.configuredBootstrapConfig.sessionId =
+      hostManager.GetActiveSession().sessionId;
+
+  NetworkSessionManager clientManager(
+      clientRuntime, []() { return CommandLineSessionOverrides{}; }, {},
+      [sharedDirectory](JoinMethod joinMethod) -> SessionBootstrapProviderPtr {
+        return CreateBootstrapProvider(joinMethod, sharedDirectory);
+      });
+
+  EXPECT_FALSE(clientManager.StartConfiguredSession());
+  EXPECT_EQ(clientManager.GetConnectionStatus().state, ConnectionState::Failed);
+  EXPECT_EQ(clientManager.GetConnectionStatus().disconnectReason,
+            DisconnectReason::AuthRejected);
+  EXPECT_EQ(clientManager.GetConnectionStatus().bootstrapFailureReason,
+            DisconnectReason::AuthRejected);
+  EXPECT_EQ(clientManager.GetConnectionStatus().handshakeFailureReason,
+            DisconnectReason::None);
+  EXPECT_NE(clientManager.GetConnectionStatus().bootstrapDetail.find("expired"),
+            String::npos);
 }
 
 TEST(NetworkSessionManagerIntegrationTest, BootstrapFailurePreservesEndpointDiagnostics) {
