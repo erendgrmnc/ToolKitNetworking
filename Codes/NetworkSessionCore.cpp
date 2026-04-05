@@ -236,6 +236,10 @@ String SessionCore::RedactSecret(const String &value) {
 String SessionCore::SanitizeDiagnosticDetail(const String &detail,
                                              const std::vector<String> &secrets) {
   String sanitized = detail;
+  ReplaceAll(sanitized, "\r\n", " ");
+  ReplaceAll(sanitized, "\r", " ");
+  ReplaceAll(sanitized, "\n", " ");
+  ReplaceAll(sanitized, "\t", " ");
   for (const String &secret : secrets) {
     if (!secret.empty()) {
       ReplaceAll(sanitized, secret, RedactSecret(secret));

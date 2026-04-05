@@ -1,28 +1,9 @@
 #include "SessionBootstrapProvider.h"
-#include <map>
+#include "NetworkSessionCore.h"
+#include "SessionDirectoryService.h"
 
 namespace ToolKit::ToolKitNetworking {
 namespace {
-struct SessionDirectoryRecord {
-  SessionDescriptor session;
-  NetworkEndpoint joinRoute;
-  String joinCredential;
-};
-
-std::map<String, SessionDirectoryRecord> &SessionDirectoryRegistry() {
-  static std::map<String, SessionDirectoryRecord> registry;
-  return registry;
-}
-
-uint64_t NextGeneratedId() {
-  static uint64_t nextId = 1;
-  return nextId++;
-}
-
-String GenerateOpaqueValue(const char *prefix) {
-  return String(prefix) + std::to_string(NextGeneratedId());
-}
-
 const char *JoinMethodName(JoinMethod joinMethod) {
   switch (joinMethod) {
   case JoinMethod::DirectAddress:
@@ -40,6 +21,17 @@ const char *JoinMethodName(JoinMethod joinMethod) {
 
 class SessionDirectoryBootstrapProvider : public ISessionBootstrapProvider {
 public:
+  explicit SessionDirectoryBootstrapProvider(
+      SessionDirectoryServicePtr directoryService)
+      : m_directoryService(directoryService
+                               ? directoryService
+                               // Zero-config SessionDirectory uses a shared
+                               // process-local fake directory so local host and
+                               // join managers can interoperate without explicit
+                               // injection. Production paths should inject a
+                               // real broker-backed service explicitly.
+                               : CreateSharedProcessLocalSessionDirectoryService()) {}
+
   JoinMethod GetJoinMethod() const override {
     return JoinMethod::SessionDirectory;
   }
@@ -49,50 +41,35 @@ public:
     BootstrapHostResult result;
     result.request = request;
 
-    if (request.bindEndpoint.port == 0) {
-      result.disconnectReason = DisconnectReason::BootstrapFailed;
-      result.detailMessage =
-          "Session directory host bootstrap requires a listen port.";
-      return result;
-    }
+    SessionDirectoryRegistrationRequest directoryRequest;
+    directoryRequest.hostingMode = request.hostingMode;
+    directoryRequest.requestedSessionId = request.sessionId;
+    directoryRequest.requestedJoinCredential = request.joinCredential;
+    directoryRequest.bindEndpoint = request.bindEndpoint;
+    directoryRequest.advertisedEndpoint = request.advertisedEndpoint;
+    directoryRequest.buildCompatibilityId = request.buildCompatibilityId;
+    directoryRequest.requireJoinCredential = request.requireJoinCredential;
 
-    NetworkEndpoint joinRoute = request.advertisedEndpoint;
-    if (!joinRoute.IsConfigured()) {
-      joinRoute = request.bindEndpoint;
-    }
-
-    if (!joinRoute.IsConfigured() || joinRoute.host == "0.0.0.0") {
-      result.disconnectReason = DisconnectReason::BootstrapFailed;
+    const SessionDirectoryRegistrationResult directoryResult =
+        m_directoryService->RegisterHostedSession(directoryRequest);
+    if (!directoryResult.success) {
+      result.disconnectReason = directoryResult.disconnectReason;
       result.detailMessage =
-          "Session directory host bootstrap requires a joinable advertised "
-          "endpoint.";
+          SessionCore::SanitizeDiagnosticDetail(directoryResult.detailMessage);
       return result;
     }
 
     result.success = true;
-    result.request.sessionId = request.sessionId.empty()
-                                   ? GenerateOpaqueValue("directory-session-")
-                                   : request.sessionId;
-    result.request.joinCredential = request.joinCredential.empty()
-                                        ? GenerateOpaqueValue("directory-key-")
-                                        : request.joinCredential;
-    result.request.requireJoinCredential = true;
-
-    result.session.sessionId = result.request.sessionId;
-    result.session.hostingMode = request.hostingMode;
-    result.session.joinMethod = JoinMethod::SessionDirectory;
-    result.session.bindEndpoint = request.bindEndpoint;
-    result.session.advertisedEndpoint = joinRoute;
-    result.session.resolvedEndpoint = joinRoute;
-    result.session.resolvedEndpoint.usage = EndpointUsage::ResolvedTransport;
-    result.session.buildCompatibilityId = request.buildCompatibilityId;
-    result.session.isJoinCredentialRequired = true;
-
-    SessionDirectoryRecord record;
-    record.session = result.session;
-    record.joinRoute = result.session.resolvedEndpoint;
-    record.joinCredential = result.request.joinCredential;
-    SessionDirectoryRegistry()[result.request.sessionId] = record;
+    result.request.sessionId = directoryResult.session.sessionId;
+    result.request.joinCredential = directoryResult.joinCredential;
+    result.request.directoryRegistrationHandle =
+        directoryResult.registrationHandle;
+    result.request.directoryRegistrationExpiresAtMs =
+        directoryResult.registrationExpiresAtMs;
+    result.request.requireJoinCredential =
+        directoryResult.session.isJoinCredentialRequired ||
+        !directoryResult.joinCredential.empty();
+    result.session = directoryResult.session;
     return result;
   }
 
@@ -101,35 +78,75 @@ public:
     BootstrapJoinResult result;
     result.request = request;
 
-    if (request.sessionId.empty()) {
-      result.disconnectReason = DisconnectReason::BootstrapFailed;
-      result.detailMessage =
-          "Session directory join bootstrap requires a public session "
-          "identifier.";
-      return result;
-    }
+    SessionDirectoryLookupRequest directoryRequest;
+    directoryRequest.sessionId = request.sessionId;
+    directoryRequest.buildCompatibilityId = request.buildCompatibilityId;
 
-    auto it = SessionDirectoryRegistry().find(request.sessionId);
-    if (it == SessionDirectoryRegistry().end()) {
-      result.disconnectReason = DisconnectReason::SessionClosed;
+    const SessionDirectoryLookupResult directoryResult =
+        m_directoryService->LookupSession(directoryRequest);
+    if (!directoryResult.success) {
+      result.disconnectReason = directoryResult.disconnectReason;
       result.detailMessage =
-          "Requested session identifier could not be resolved from the "
-          "session directory.";
+          SessionCore::SanitizeDiagnosticDetail(directoryResult.detailMessage);
       return result;
     }
 
     result.success = true;
-    result.request.sessionId = it->second.session.sessionId;
-    result.request.joinCredential = it->second.joinCredential;
-    result.request.targetEndpoint = it->second.joinRoute;
-    result.session = it->second.session;
-    result.session.hostingMode = hostingMode;
-    result.session.joinMethod = JoinMethod::SessionDirectory;
-    result.session.resolvedEndpoint = it->second.joinRoute;
+    result.request.sessionId = directoryResult.session.sessionId;
+    result.request.joinCredential = directoryResult.joinCredential;
+    result.request.targetEndpoint = directoryResult.resolvedJoinRoute;
+    result.session = directoryResult.session;
+    result.session.resolvedEndpoint = directoryResult.resolvedJoinRoute;
     result.session.resolvedEndpoint.usage = EndpointUsage::ResolvedTransport;
-    result.session.isJoinCredentialRequired = true;
+    result.session.isJoinCredentialRequired =
+        result.session.isJoinCredentialRequired ||
+        !directoryResult.joinCredential.empty();
     return result;
   }
+
+  HostedSessionRefreshResult RefreshHostedSession(
+      const SessionHostRequest &request) override {
+    HostedSessionRefreshResult result;
+    if (request.directoryRegistrationHandle.empty()) {
+      return result;
+    }
+
+    const SessionDirectoryRefreshResult directoryResult =
+        m_directoryService->RefreshHostedSession(
+            SessionDirectoryRefreshRequest{request.directoryRegistrationHandle});
+    if (!directoryResult.success) {
+      result.success = false;
+      result.disconnectReason = directoryResult.disconnectReason;
+      result.detailMessage =
+          SessionCore::SanitizeDiagnosticDetail(directoryResult.detailMessage);
+      return result;
+    }
+
+    result.registrationExpiresAtMs = directoryResult.registrationExpiresAtMs;
+    return result;
+  }
+
+  HostedSessionReleaseResult ReleaseHostedSession(
+      const SessionHostRequest &request) override {
+    HostedSessionReleaseResult result;
+    if (request.directoryRegistrationHandle.empty()) {
+      return result;
+    }
+
+    const SessionDirectoryUnregisterResult directoryResult =
+        m_directoryService->UnregisterHostedSession(SessionDirectoryUnregisterRequest{
+            request.directoryRegistrationHandle});
+    if (!directoryResult.success) {
+      result.success = false;
+      result.disconnectReason = directoryResult.disconnectReason;
+      result.detailMessage =
+          SessionCore::SanitizeDiagnosticDetail(directoryResult.detailMessage);
+    }
+    return result;
+  }
+
+private:
+  SessionDirectoryServicePtr m_directoryService;
 };
 
 class DirectAddressBootstrapProvider : public ISessionBootstrapProvider {
@@ -224,11 +241,18 @@ private:
 } // namespace
 
 SessionBootstrapProviderPtr CreateBootstrapProvider(JoinMethod joinMethod) {
+  return CreateBootstrapProvider(joinMethod, {});
+}
+
+SessionBootstrapProviderPtr
+CreateBootstrapProvider(JoinMethod joinMethod,
+                        SessionDirectoryServicePtr directoryService) {
   switch (joinMethod) {
   case JoinMethod::DirectAddress:
     return std::make_unique<DirectAddressBootstrapProvider>();
   case JoinMethod::SessionDirectory:
-    return std::make_unique<SessionDirectoryBootstrapProvider>();
+    return std::make_unique<SessionDirectoryBootstrapProvider>(
+        std::move(directoryService));
   case JoinMethod::LanDiscovery:
   case JoinMethod::BrokeredHostedSession:
     return std::make_unique<UnsupportedBootstrapProvider>(joinMethod);

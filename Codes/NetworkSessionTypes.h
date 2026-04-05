@@ -102,6 +102,8 @@ struct SessionHostRequest {
   NetworkEndpoint advertisedEndpoint;
   String sessionId;
   String joinCredential;
+  String directoryRegistrationHandle;
+  uint64_t directoryRegistrationExpiresAtMs = 0;
   String buildCompatibilityId;
   uint maxClients = 2;
   bool enableLanDiscovery = false;

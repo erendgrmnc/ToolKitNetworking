@@ -84,6 +84,10 @@ set(SOURCE
 set(HEADERS 
     NetworkRole.h
     NetworkSessionCore.h
+    SessionDirectoryBrokerClient.h
+    SessionDirectoryBrokerTransport.h
+    SessionDirectoryRemoteBrokerClient.h
+    SessionDirectoryService.h
     SessionBootstrapProvider.h
     PluginMain.h
     NetworkBase.h
@@ -130,6 +134,8 @@ message("Using toolkit output directory: ${TK_OUT_DIR}")
 add_library(ToolKitNetworkingCore STATIC
     HandshakeSecurity.cpp
     NetworkSessionCore.cpp
+    SessionDirectoryRemoteBrokerClient.cpp
+    SessionDirectoryService.cpp
     SessionBootstrapProvider.cpp
 )
 target_include_directories(ToolKitNetworkingCore PUBLIC
