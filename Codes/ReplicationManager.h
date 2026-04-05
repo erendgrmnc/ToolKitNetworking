@@ -1,8 +1,10 @@
 #pragma once
 
+#include "HandshakeSecurity.h"
 #include "NetworkComponent.h"
 #include "NetworkPackets.h"
 #include "NetworkSessionTypes.h"
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -34,19 +36,21 @@ public:
   bool HasSessionAuthFailed() const;
   DisconnectReason GetSessionAuthFailureReason() const;
   const String &GetSessionAuthFailureDetail() const;
+  void SetClockNowProvider(std::function<uint64_t()> clockNowProvider);
 
 private:
   struct PeerHandshakeState {
-    bool challengeSent = false;
-    bool authenticated = false;
-    uint64_t clientNonce = 0;
-    uint64_t serverNonce = 0;
+    HandshakeSecurity::PeerHandshakeGateState gate;
   };
 
   NetworkComponent *InstantiateNetworkObject(const std::string &typeOrPath,
                                              EntityPtr &outEntity);
   NetworkComponent *FindComponentByNetworkID(int networkID) const;
   bool IsPeerAuthenticated(int peerID) const;
+  uint64_t GetNowMs() const;
+  size_t GetPendingHandshakeCount() const;
+  bool RejectPeerWithTracking(int peerID, DisconnectReason reason,
+                              const String &detail);
   void ResetAuthenticationState();
   void RejectPeer(int peerID, DisconnectReason reason,
                   const String &detail) const;
@@ -76,6 +80,7 @@ private:
   bool m_localAuthFailed = false;
   uint64_t m_localClientNonce = 0;
   uint64_t m_localServerNonce = 0;
+  std::function<uint64_t()> m_clockNowProvider;
   SessionJoinRequest m_pendingJoinRequest;
   DisconnectReason m_authFailureReason = DisconnectReason::None;
   String m_authFailureDetail;

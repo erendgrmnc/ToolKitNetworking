@@ -128,6 +128,7 @@ message("Using dependency output directory: ${TK_DEPENDECY_OUT_DIR}")
 message("Using toolkit output directory: ${TK_OUT_DIR}")
 
 add_library(ToolKitNetworkingCore STATIC
+    HandshakeSecurity.cpp
     NetworkSessionCore.cpp
     SessionBootstrapProvider.cpp
 )

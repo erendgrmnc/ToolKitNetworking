@@ -1,4 +1,5 @@
 #include "NetworkSessionCore.h"
+#include <algorithm>
 #include <vector>
 
 namespace ToolKit::ToolKitNetworking {
@@ -40,6 +41,18 @@ std::vector<String> TokenizeCommandLine(const String &commandLine) {
   }
 
   return args;
+}
+
+void ReplaceAll(String &value, const String &needle, const String &replacement) {
+  if (needle.empty()) {
+    return;
+  }
+
+  size_t pos = 0;
+  while ((pos = value.find(needle, pos)) != String::npos) {
+    value.replace(pos, needle.length(), replacement);
+    pos += replacement.length();
+  }
 }
 } // namespace
 
@@ -214,5 +227,70 @@ SessionCore::BuildJoinRequest(const SessionBootstrapConfig &config,
       config.buildCompatibilityId.empty() ? BuildCompatibilityId()
                                           : config.buildCompatibilityId;
   return request;
+}
+
+String SessionCore::RedactSecret(const String &value) {
+  return value.empty() ? String{} : String{"<redacted>"};
+}
+
+String SessionCore::SanitizeDiagnosticDetail(const String &detail,
+                                             const std::vector<String> &secrets) {
+  String sanitized = detail;
+  for (const String &secret : secrets) {
+    if (!secret.empty()) {
+      ReplaceAll(sanitized, secret, RedactSecret(secret));
+    }
+  }
+
+  return sanitized;
+}
+
+SessionValidationResult
+SessionCore::ValidateHostBootstrapResult(const SessionHostRequest &request) {
+  SessionValidationResult result;
+  if (request.bindEndpoint.port == 0) {
+    result.success = false;
+    result.disconnectReason = DisconnectReason::BootstrapFailed;
+    result.detailMessage = "Resolved host bootstrap requires a listen port.";
+    return result;
+  }
+
+  if (request.requireJoinCredential && request.joinCredential.empty()) {
+    result.success = false;
+    result.disconnectReason = DisconnectReason::BootstrapFailed;
+    result.detailMessage =
+        "Resolved host bootstrap requires a join credential when credential "
+        "enforcement is enabled.";
+  }
+
+  return result;
+}
+
+SessionValidationResult
+SessionCore::ValidateJoinBootstrapResult(const SessionJoinRequest &request,
+                                         SessionDescriptor &session) {
+  SessionValidationResult result;
+  if (!request.targetEndpoint.IsConfigured()) {
+    result.success = false;
+    result.disconnectReason = DisconnectReason::BootstrapFailed;
+    result.detailMessage =
+        "Resolved join bootstrap requires an explicit join target endpoint.";
+    return result;
+  }
+
+  if (!session.resolvedEndpoint.IsConfigured()) {
+    session.resolvedEndpoint = request.targetEndpoint;
+    session.resolvedEndpoint.usage = EndpointUsage::ResolvedTransport;
+    session.resolvedEndpoint.protocol = request.targetEndpoint.protocol;
+  }
+
+  if (!session.resolvedEndpoint.IsConfigured()) {
+    result.success = false;
+    result.disconnectReason = DisconnectReason::BootstrapFailed;
+    result.detailMessage =
+        "Resolved join bootstrap requires a resolved transport endpoint.";
+  }
+
+  return result;
 }
 } // namespace ToolKit::ToolKitNetworking

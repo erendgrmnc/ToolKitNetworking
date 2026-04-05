@@ -101,6 +101,8 @@ public:
   bool HasSessionAuthFailed() const override;
   DisconnectReason GetSessionAuthFailureReason() const override;
   String GetSessionAuthFailureDetail() const override;
+  void SetReplicationClockNowProviderForTests(
+      std::function<uint64_t()> clockNowProvider);
 
   void SendRPCPacket(PacketStream &rpcStream, RPCReceiver target, int ownerID);
 

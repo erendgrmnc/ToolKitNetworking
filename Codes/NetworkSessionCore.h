@@ -2,6 +2,7 @@
 
 #include "NetworkRole.h"
 #include "NetworkSessionTypes.h"
+#include <vector>
 
 namespace ToolKit::ToolKitNetworking {
 struct CommandLineSessionOverrides {
@@ -39,6 +40,12 @@ struct SessionBootstrapConfig {
   bool requireJoinCredential = false;
 };
 
+struct SessionValidationResult {
+  bool success = true;
+  DisconnectReason disconnectReason = DisconnectReason::None;
+  String detailMessage;
+};
+
 namespace SessionCore {
 String BuildCompatibilityId();
 HostingMode LegacyRoleToHostingMode(NetworkRole role);
@@ -47,5 +54,12 @@ SessionHostRequest BuildHostRequest(const SessionBootstrapConfig &config,
                                     const CommandLineSessionOverrides &overrides);
 SessionJoinRequest BuildJoinRequest(const SessionBootstrapConfig &config,
                                     const CommandLineSessionOverrides &overrides);
+String RedactSecret(const String &value);
+String SanitizeDiagnosticDetail(const String &detail,
+                                const std::vector<String> &secrets = {});
+SessionValidationResult
+ValidateHostBootstrapResult(const SessionHostRequest &request);
+SessionValidationResult ValidateJoinBootstrapResult(const SessionJoinRequest &request,
+                                                    SessionDescriptor &session);
 } // namespace SessionCore
 } // namespace ToolKit::ToolKitNetworking

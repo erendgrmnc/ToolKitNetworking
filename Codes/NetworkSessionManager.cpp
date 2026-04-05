@@ -16,6 +16,19 @@ CommandLineSessionOverrides ReadProcessCommandLineOverrides() {
 #endif
   return CommandLineSessionOverrides{};
 }
+
+std::vector<String> CollectSecrets(const SessionHostRequest &hostRequest,
+                                   const SessionJoinRequest &joinRequest) {
+  std::vector<String> secrets;
+  if (!hostRequest.joinCredential.empty()) {
+    secrets.push_back(hostRequest.joinCredential);
+  }
+  if (!joinRequest.joinCredential.empty()) {
+    secrets.push_back(joinRequest.joinCredential);
+  }
+
+  return secrets;
+}
 } // namespace
 
 NetworkSessionManager::NetworkSessionManager(
@@ -45,8 +58,7 @@ NetworkSessionManager::NetworkSessionManager(
     };
   }
 
-  m_connectionStatus.state = ConnectionState::Idle;
-  m_connectionStatus.disconnectReason = DisconnectReason::None;
+  m_connectionStatus = ConnectionStatus{};
   m_connectionStatus.detailMessage = "Idle";
 }
 
@@ -64,6 +76,7 @@ bool NetworkSessionManager::StartConfiguredSession() {
   m_activeSession = SessionDescriptor{};
   m_activeSession.hostingMode = hostingMode;
   m_activeSession.sessionId = m_lastHostRequest.sessionId;
+  ResetDiagnostics();
 
   const bool shouldHost = hostingMode == HostingMode::DedicatedServer ||
                           hostingMode == HostingMode::ListenServer;
@@ -85,8 +98,9 @@ bool NetworkSessionManager::StartConfiguredSession() {
   SessionBootstrapProviderPtr bootstrapProvider =
       m_bootstrapProviderFactory(config.joinMethod);
   if (!bootstrapProvider) {
-    SetStatus(ConnectionState::Failed, DisconnectReason::BootstrapFailed,
-              "No bootstrap provider is available for the selected join method.");
+    SetBootstrapFailureStatus(
+        DisconnectReason::BootstrapFailed,
+        "No bootstrap provider is available for the selected join method.");
     return false;
   }
 
@@ -95,15 +109,27 @@ bool NetworkSessionManager::StartConfiguredSession() {
     const BootstrapHostResult bootstrapHost =
         bootstrapProvider->PrepareHostSession(m_lastHostRequest);
     if (!bootstrapHost.success) {
-      SetStatus(ConnectionState::Failed, bootstrapHost.disconnectReason,
-                bootstrapHost.detailMessage.empty()
-                    ? "Failed to prepare host bootstrap session."
-                    : bootstrapHost.detailMessage);
+      const String detail = SessionCore::SanitizeDiagnosticDetail(
+          bootstrapHost.detailMessage.empty()
+              ? "Failed to prepare host bootstrap session."
+              : bootstrapHost.detailMessage,
+          CollectSecrets(bootstrapHost.request, m_lastJoinRequest));
+      SetBootstrapFailureStatus(bootstrapHost.disconnectReason, detail);
       return false;
     }
 
     m_lastHostRequest = bootstrapHost.request;
     ApplyResolvedSession(bootstrapHost.session);
+    const SessionValidationResult hostValidation =
+        SessionCore::ValidateHostBootstrapResult(m_lastHostRequest);
+    if (!hostValidation.success) {
+      SetBootstrapFailureStatus(
+          hostValidation.disconnectReason,
+          SessionCore::SanitizeDiagnosticDetail(
+              hostValidation.detailMessage,
+              CollectSecrets(m_lastHostRequest, m_lastJoinRequest)));
+      return false;
+    }
     m_activeSession.isJoinCredentialRequired =
         m_activeSession.isJoinCredentialRequired ||
         m_lastHostRequest.requireJoinCredential;
@@ -125,17 +151,29 @@ bool NetworkSessionManager::StartConfiguredSession() {
         m_runtime.StopSessionTransports();
       }
 
-      SetStatus(ConnectionState::Failed, bootstrapJoin.disconnectReason,
-                bootstrapJoin.detailMessage.empty()
-                    ? "Failed to resolve join bootstrap session."
-                    : bootstrapJoin.detailMessage);
+      const String detail = SessionCore::SanitizeDiagnosticDetail(
+          bootstrapJoin.detailMessage.empty()
+              ? "Failed to resolve join bootstrap session."
+              : bootstrapJoin.detailMessage,
+          CollectSecrets(m_lastHostRequest, bootstrapJoin.request));
+      SetBootstrapFailureStatus(bootstrapJoin.disconnectReason, detail);
       return false;
     }
 
     m_lastJoinRequest = bootstrapJoin.request;
     ApplyResolvedSession(bootstrapJoin.session);
-    if (!m_activeSession.resolvedEndpoint.IsConfigured()) {
-      m_activeSession.resolvedEndpoint = m_lastJoinRequest.targetEndpoint;
+    const SessionValidationResult joinValidation =
+        SessionCore::ValidateJoinBootstrapResult(m_lastJoinRequest, m_activeSession);
+    if (!joinValidation.success) {
+      if (shouldHost) {
+        m_runtime.StopSessionTransports();
+      }
+      SetBootstrapFailureStatus(
+          joinValidation.disconnectReason,
+          SessionCore::SanitizeDiagnosticDetail(
+              joinValidation.detailMessage,
+              CollectSecrets(m_lastHostRequest, m_lastJoinRequest)));
+      return false;
     }
     m_activeSession.isJoinCredentialRequired =
         m_activeSession.isJoinCredentialRequired ||
@@ -144,8 +182,9 @@ bool NetworkSessionManager::StartConfiguredSession() {
     m_handshakeStartedAtMs = 0;
 
     SetStatus(ConnectionState::Connecting);
-    if (!m_runtime.StartClientTransport(m_lastJoinRequest.targetEndpoint.host,
-                                        m_lastJoinRequest.targetEndpoint.port)) {
+    const NetworkEndpoint &resolvedEndpoint = m_activeSession.resolvedEndpoint;
+    if (!m_runtime.StartClientTransport(resolvedEndpoint.host,
+                                        resolvedEndpoint.port)) {
       if (shouldHost) {
         m_runtime.StopSessionTransports();
       }
@@ -210,11 +249,13 @@ void NetworkSessionManager::Update() {
     if (!m_runtime.BeginSessionHandshake(m_lastJoinRequest)) {
       m_connectionAttemptStartedAtMs = 0;
       m_handshakeStartedAtMs = 0;
-      SetStatus(ConnectionState::Failed,
-                m_runtime.GetSessionAuthFailureReason(),
-                m_runtime.GetSessionAuthFailureDetail().empty()
-                    ? "Failed to start session handshake."
-                    : m_runtime.GetSessionAuthFailureDetail());
+      SetHandshakeFailureStatus(
+          m_runtime.GetSessionAuthFailureReason(),
+          SessionCore::SanitizeDiagnosticDetail(
+              m_runtime.GetSessionAuthFailureDetail().empty()
+                  ? "Failed to start session handshake."
+                  : m_runtime.GetSessionAuthFailureDetail(),
+              CollectSecrets(m_lastHostRequest, m_lastJoinRequest)));
       return;
     }
 
@@ -228,10 +269,13 @@ void NetworkSessionManager::Update() {
   if (m_connectionStatus.state == ConnectionState::Handshaking &&
       m_runtime.HasSessionAuthFailed()) {
     m_handshakeStartedAtMs = 0;
-    SetStatus(ConnectionState::Failed, m_runtime.GetSessionAuthFailureReason(),
-              m_runtime.GetSessionAuthFailureDetail().empty()
-                  ? "Session handshake rejected."
-                  : m_runtime.GetSessionAuthFailureDetail());
+    SetHandshakeFailureStatus(
+        m_runtime.GetSessionAuthFailureReason(),
+        SessionCore::SanitizeDiagnosticDetail(
+            m_runtime.GetSessionAuthFailureDetail().empty()
+                ? "Session handshake rejected."
+                : m_runtime.GetSessionAuthFailureDetail(),
+            CollectSecrets(m_lastHostRequest, m_lastJoinRequest)));
     return;
   }
 
@@ -245,8 +289,8 @@ void NetworkSessionManager::Update() {
       }
 
       m_handshakeStartedAtMs = 0;
-      SetStatus(ConnectionState::Failed, DisconnectReason::Timeout,
-                "Session handshake timed out.");
+      SetHandshakeFailureStatus(DisconnectReason::Timeout,
+                                "Session handshake timed out.");
       return;
     }
   }
@@ -347,9 +391,51 @@ void NetworkSessionManager::ApplyResolvedSession(
       resolvedSession.isJoinCredentialRequired;
 }
 
+void NetworkSessionManager::ResetDiagnostics() {
+  m_connectionStatus.bootstrapFailureReason = DisconnectReason::None;
+  m_connectionStatus.bootstrapDetail.clear();
+  m_connectionStatus.handshakeFailureReason = DisconnectReason::None;
+  m_connectionStatus.handshakeDetail.clear();
+  m_connectionStatus.activeEndpoint = NetworkEndpoint{};
+  m_connectionStatus.bindEndpoint = NetworkEndpoint{};
+  m_connectionStatus.advertisedEndpoint = NetworkEndpoint{};
+  m_connectionStatus.resolvedJoinTarget = NetworkEndpoint{};
+}
+
+void NetworkSessionManager::SetBootstrapFailureStatus(DisconnectReason reason,
+                                                      const std::string &detail) {
+  m_connectionStatus.handshakeFailureReason = DisconnectReason::None;
+  m_connectionStatus.handshakeDetail.clear();
+  m_connectionStatus.bootstrapFailureReason = reason;
+  m_connectionStatus.bootstrapDetail = detail;
+  SetStatus(ConnectionState::Failed, reason, detail);
+}
+
+void NetworkSessionManager::SetHandshakeFailureStatus(DisconnectReason reason,
+                                                      const std::string &detail) {
+  m_connectionStatus.bootstrapFailureReason = DisconnectReason::None;
+  m_connectionStatus.bootstrapDetail.clear();
+  m_connectionStatus.handshakeFailureReason = reason;
+  m_connectionStatus.handshakeDetail = detail;
+  SetStatus(ConnectionState::Failed, reason, detail);
+}
+
+void NetworkSessionManager::RefreshEndpointDiagnostics() {
+  m_connectionStatus.bindEndpoint = m_activeSession.bindEndpoint;
+  m_connectionStatus.advertisedEndpoint = m_activeSession.advertisedEndpoint;
+  if (m_activeSession.resolvedEndpoint.IsConfigured()) {
+    m_connectionStatus.resolvedJoinTarget = m_activeSession.resolvedEndpoint;
+  } else if (m_lastJoinRequest.targetEndpoint.IsConfigured()) {
+    m_connectionStatus.resolvedJoinTarget = m_lastJoinRequest.targetEndpoint;
+  } else {
+    m_connectionStatus.resolvedJoinTarget = NetworkEndpoint{};
+  }
+}
+
 void NetworkSessionManager::SetStatus(ConnectionState state,
                                       DisconnectReason reason,
                                       const std::string &detail) {
+  RefreshEndpointDiagnostics();
   m_connectionStatus.state = state;
   m_connectionStatus.disconnectReason = reason;
   m_connectionStatus.detailMessage = detail;
@@ -357,16 +443,12 @@ void NetworkSessionManager::SetStatus(ConnectionState state,
   m_connectionStatus.isAuthenticated =
       (state == ConnectionState::Connected && !m_runtime.HasClientTransport()) ||
       m_runtime.IsSessionAuthenticated();
-  if (state == ConnectionState::StartingHost || state == ConnectionState::Connected) {
-    if (m_activeSession.resolvedEndpoint.IsConfigured()) {
-      m_connectionStatus.activeEndpoint = m_activeSession.resolvedEndpoint;
-    } else if (m_activeSession.advertisedEndpoint.IsConfigured()) {
-      m_connectionStatus.activeEndpoint = m_activeSession.advertisedEndpoint;
-    } else {
-      m_connectionStatus.activeEndpoint = m_activeSession.bindEndpoint;
-    }
-  } else if (state == ConnectionState::Connecting) {
-    m_connectionStatus.activeEndpoint = m_lastJoinRequest.targetEndpoint;
+  if (m_connectionStatus.resolvedJoinTarget.IsConfigured()) {
+    m_connectionStatus.activeEndpoint = m_connectionStatus.resolvedJoinTarget;
+  } else if (m_connectionStatus.advertisedEndpoint.IsConfigured()) {
+    m_connectionStatus.activeEndpoint = m_connectionStatus.advertisedEndpoint;
+  } else if (m_connectionStatus.bindEndpoint.IsConfigured()) {
+    m_connectionStatus.activeEndpoint = m_connectionStatus.bindEndpoint;
   } else {
     m_connectionStatus.activeEndpoint = NetworkEndpoint{};
   }

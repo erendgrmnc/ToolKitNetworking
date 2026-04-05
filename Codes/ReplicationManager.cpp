@@ -9,6 +9,7 @@
 #include <Scene.h>
 #include <ToolKit.h>
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <random>
 
@@ -34,7 +35,13 @@ uint64_t GenerateNonce() {
 } // namespace
 
 namespace ToolKit::ToolKitNetworking {
-ReplicationManager::ReplicationManager(NetworkManager &owner) : m_owner(owner) {}
+ReplicationManager::ReplicationManager(NetworkManager &owner) : m_owner(owner) {
+  m_clockNowProvider = []() {
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+  };
+}
 
 void ReplicationManager::RegisterComponent(NetworkComponent *networkComponent) {
   if (networkComponent->GetNetworkID() == -1) {
@@ -174,7 +181,23 @@ NetworkComponent *ReplicationManager::InstantiateNetworkObject(
 
 bool ReplicationManager::IsPeerAuthenticated(int peerID) const {
   auto it = m_peerHandshakeStates.find(peerID);
-  return it != m_peerHandshakeStates.end() && it->second.authenticated;
+  return it != m_peerHandshakeStates.end() && it->second.gate.authenticated;
+}
+
+uint64_t ReplicationManager::GetNowMs() const {
+  return m_clockNowProvider ? m_clockNowProvider() : 0;
+}
+
+size_t ReplicationManager::GetPendingHandshakeCount() const {
+  size_t count = 0;
+  for (const auto &[peerId, state] : m_peerHandshakeStates) {
+    (void)peerId;
+    if (HandshakeSecurity::HasPendingChallenge(state.gate)) {
+      ++count;
+    }
+  }
+
+  return count;
 }
 
 void ReplicationManager::ResetAuthenticationState() {
@@ -186,6 +209,21 @@ void ReplicationManager::ResetAuthenticationState() {
   m_pendingJoinRequest = SessionJoinRequest{};
   m_authFailureReason = DisconnectReason::None;
   m_authFailureDetail.clear();
+}
+
+bool ReplicationManager::RejectPeerWithTracking(int peerID,
+                                                DisconnectReason reason,
+                                                const String &detail) {
+  auto &state = m_peerHandshakeStates[peerID].gate;
+  HandshakeSecurity::RecordInvalidAttempt(state, GetNowMs());
+  if (HandshakeSecurity::IsPeerBlocked(state, GetNowMs())) {
+    RejectPeer(peerID, DisconnectReason::RateLimited,
+               "Handshake peer is temporarily rate limited.");
+    return false;
+  }
+
+  RejectPeer(peerID, reason, detail);
+  return true;
 }
 
 void ReplicationManager::RejectPeer(int peerID, DisconnectReason reason,
@@ -355,15 +393,27 @@ const String &ReplicationManager::GetSessionAuthFailureDetail() const {
   return m_authFailureDetail;
 }
 
+void ReplicationManager::SetClockNowProvider(
+    std::function<uint64_t()> clockNowProvider) {
+  m_clockNowProvider = std::move(clockNowProvider);
+}
+
 void ReplicationManager::HandleHandshakeHello(HandshakeHelloPacket *packet,
                                               int source) {
   if (!m_owner.IsServer() || !m_owner.m_server) {
     return;
   }
 
+  PeerHandshakeState &state = m_peerHandshakeStates[source];
+  if (HandshakeSecurity::IsPeerBlocked(state.gate, GetNowMs())) {
+    RejectPeer(source, DisconnectReason::RateLimited,
+               "Handshake peer is temporarily rate limited.");
+    return;
+  }
+
   if (packet->protocolVersion != SessionProtocol::Version) {
-    RejectPeer(source, DisconnectReason::VersionMismatch,
-               "Protocol version mismatch.");
+    RejectPeerWithTracking(source, DisconnectReason::VersionMismatch,
+                           "Protocol version mismatch.");
     return;
   }
 
@@ -371,47 +421,57 @@ void ReplicationManager::HandleHandshakeHello(HandshakeHelloPacket *packet,
   const String buildCompatibilityId = PacketStringToString(packet->buildCompatibilityId);
   if (!hostRequest.buildCompatibilityId.empty() &&
       buildCompatibilityId != hostRequest.buildCompatibilityId) {
-    RejectPeer(source, DisconnectReason::VersionMismatch,
-               "Build compatibility mismatch.");
+    RejectPeerWithTracking(source, DisconnectReason::VersionMismatch,
+                           "Build compatibility mismatch.");
     return;
   }
 
   const String sessionId = PacketStringToString(packet->sessionId);
   if (!hostRequest.sessionId.empty() && sessionId != hostRequest.sessionId) {
-    RejectPeer(source, DisconnectReason::SessionClosed,
-               "Session identifier mismatch.");
+    RejectPeerWithTracking(source, DisconnectReason::SessionClosed,
+                           "Session identifier mismatch.");
     return;
   }
 
   if (hostRequest.requireJoinCredential) {
     const String joinCredential = PacketStringToString(packet->joinCredential);
     if (joinCredential.empty() || joinCredential != hostRequest.joinCredential) {
-      RejectPeer(source, DisconnectReason::AuthRejected,
-                 "Join credential rejected.");
+      RejectPeerWithTracking(source, DisconnectReason::AuthRejected,
+                             "Join credential rejected.");
       return;
     }
   }
 
   if (packet->requestedHostingMode != static_cast<uint>(HostingMode::Client)) {
-    RejectPeer(source, DisconnectReason::ProtocolError,
-               "Client requested incompatible hosting mode.");
+    RejectPeerWithTracking(source, DisconnectReason::ProtocolError,
+                           "Client requested incompatible hosting mode.");
     return;
   }
 
-  PeerHandshakeState &state = m_peerHandshakeStates[source];
-  if (state.authenticated) {
-    RejectPeer(source, DisconnectReason::ProtocolError,
-               "Peer is already authenticated.");
+  if (HandshakeSecurity::IsDuplicateOrStaleHello(state.gate)) {
+    RejectPeerWithTracking(source, DisconnectReason::ProtocolError,
+                           "Duplicate or stale handshake hello.");
     return;
   }
-  state.challengeSent = true;
-  state.authenticated = false;
-  state.clientNonce = packet->clientNonce;
-  state.serverNonce = GenerateNonce();
+
+  const size_t pendingLimit =
+      static_cast<size_t>((std::max)(1u, m_owner.GetLastHostRequest().maxClients));
+  if (!HandshakeSecurity::HasPendingChallenge(state.gate) &&
+      GetPendingHandshakeCount() >= pendingLimit) {
+    RejectPeerWithTracking(source, DisconnectReason::RateLimited,
+                           "Server has reached the pending handshake limit.");
+    return;
+  }
+
+  HandshakeSecurity::ResetChallenge(state.gate);
+  state.gate.authenticated = false;
+  state.gate.challengeSent = true;
+  state.gate.clientNonce = packet->clientNonce;
+  state.gate.serverNonce = GenerateNonce();
 
   HandshakeChallengePacket challenge;
-  challenge.clientNonce = state.clientNonce;
-  challenge.serverNonce = state.serverNonce;
+  challenge.clientNonce = state.gate.clientNonce;
+  challenge.serverNonce = state.gate.serverNonce;
   m_owner.m_server->SendPacketToPeer(source, challenge, true);
 }
 
@@ -442,22 +502,35 @@ void ReplicationManager::HandleHandshakeResponse(HandshakeResponsePacket *packet
   }
 
   auto it = m_peerHandshakeStates.find(source);
-  if (it == m_peerHandshakeStates.end() || !it->second.challengeSent) {
-    RejectPeer(source, DisconnectReason::ProtocolError,
-               "Unexpected handshake response.");
+  if (it == m_peerHandshakeStates.end()) {
+    RejectPeerWithTracking(source, DisconnectReason::ProtocolError,
+                           "Unexpected handshake response.");
     return;
   }
 
   PeerHandshakeState &state = it->second;
-  if (packet->clientNonce != state.clientNonce ||
-      packet->serverNonce != state.serverNonce) {
-    RejectPeer(source, DisconnectReason::AuthRejected,
-               "Handshake nonce validation failed.");
-    m_peerHandshakeStates.erase(it);
+  if (HandshakeSecurity::IsPeerBlocked(state.gate, GetNowMs())) {
+    RejectPeer(source, DisconnectReason::RateLimited,
+               "Handshake peer is temporarily rate limited.");
     return;
   }
 
-  state.authenticated = true;
+  if (HandshakeSecurity::IsDuplicateOrStaleResponse(state.gate)) {
+    RejectPeerWithTracking(source, DisconnectReason::ProtocolError,
+                           "Duplicate or stale handshake response.");
+    return;
+  }
+
+  if (packet->clientNonce != state.gate.clientNonce ||
+      packet->serverNonce != state.gate.serverNonce) {
+    RejectPeerWithTracking(source, DisconnectReason::AuthRejected,
+                           "Handshake nonce validation failed.");
+    HandshakeSecurity::ResetChallenge(state.gate);
+    return;
+  }
+
+  state.gate.challengeConsumed = true;
+  state.gate.authenticated = true;
   m_owner.m_server->AddPeer(source);
 
   HandshakeAcceptPacket accept;
@@ -513,6 +586,17 @@ void ReplicationManager::HandleHandshakeReject(HandshakeRejectPacket *packet) {
 }
 
 void ReplicationManager::ReceivePacket(int type, GamePacket *payload, int source) {
+  if (!HandshakeSecurity::HasExpectedFixedPacketSize(type, payload)) {
+    if (m_owner.IsServer() && source > 0) {
+      RejectPeerWithTracking(source, DisconnectReason::ProtocolError,
+                             "Malformed handshake packet size.");
+    } else {
+      RejectLocalSession(DisconnectReason::ProtocolError,
+                         "Malformed handshake packet size.");
+    }
+    return;
+  }
+
   if (type == NetworkMessage::PeerDisconnected) {
     m_peerHandshakeStates.erase(source);
     m_peerLastAckedTick.erase(source);
@@ -542,6 +626,21 @@ void ReplicationManager::ReceivePacket(int type, GamePacket *payload, int source
   if (type == NetworkMessage::HandshakeReject) {
     HandleHandshakeReject((HandshakeRejectPacket *)payload);
     return;
+  }
+
+  if (!HandshakeSecurity::IsAllowedPreAuthMessage(type)) {
+    if (m_owner.IsServer() && source > 0 && !IsPeerAuthenticated(source)) {
+      RejectPeerWithTracking(source, DisconnectReason::ProtocolError,
+                             "Pre-auth packet type is not allowed.");
+      return;
+    }
+
+    if (!m_owner.IsServer() && m_owner.m_client && !m_localSessionAuthenticated &&
+        type != NetworkMessage::Shutdown) {
+      RejectLocalSession(DisconnectReason::ProtocolError,
+                         "Received non-handshake packet before authentication.");
+      return;
+    }
   }
 
   if (m_owner.IsServer() && source > 0 && !IsPeerAuthenticated(source)) {

@@ -380,6 +380,13 @@ ToolKit::ToolKitNetworking::NetworkManager::GetSessionAuthFailureDetail() const 
   return m_replicationManager->GetSessionAuthFailureDetail();
 }
 
+void ToolKit::ToolKitNetworking::NetworkManager::SetReplicationClockNowProviderForTests(
+    std::function<uint64_t()> clockNowProvider) {
+  if (m_replicationManager) {
+    m_replicationManager->SetClockNowProvider(std::move(clockNowProvider));
+  }
+}
+
 ToolKit::ToolKitNetworking::ConnectionStatus
 ToolKit::ToolKitNetworking::NetworkManager::GetConnectionStatus() const {
   if (m_sessionManager) {

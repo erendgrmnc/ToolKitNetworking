@@ -39,6 +39,12 @@ private:
   HostingMode ResolveConfiguredHostingMode() const;
   uint64_t GetNowMs() const;
   void ApplyResolvedSession(const SessionDescriptor &resolvedSession);
+  void ResetDiagnostics();
+  void SetBootstrapFailureStatus(DisconnectReason reason,
+                                 const std::string &detail);
+  void SetHandshakeFailureStatus(DisconnectReason reason,
+                                 const std::string &detail);
+  void RefreshEndpointDiagnostics();
   void SetStatus(ConnectionState state,
                  DisconnectReason reason = DisconnectReason::None,
                  const std::string &detail = "");

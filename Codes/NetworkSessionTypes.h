@@ -37,6 +37,7 @@ enum class DisconnectReason {
   UserRequested,
   Timeout,
   TransportError,
+  RateLimited,
   BootstrapFailed,
   VersionMismatch,
   AuthRejected,
@@ -115,6 +116,13 @@ struct ConnectionStatus {
   String detailMessage;
   String sessionId;
   NetworkEndpoint activeEndpoint;
+  NetworkEndpoint bindEndpoint;
+  NetworkEndpoint advertisedEndpoint;
+  NetworkEndpoint resolvedJoinTarget;
+  DisconnectReason bootstrapFailureReason = DisconnectReason::None;
+  String bootstrapDetail;
+  DisconnectReason handshakeFailureReason = DisconnectReason::None;
+  String handshakeDetail;
   bool isAuthenticated = false;
 };
 
