@@ -1,9 +1,52 @@
 #include "NetworkSessionManager.h"
+#include "SessionBootstrapProvider.h"
 #include "Support/FakeSessionRuntime.h"
 #include "Support/ManualClock.h"
 #include <gtest/gtest.h>
 
 namespace ToolKit::ToolKitNetworking {
+namespace {
+class RewritingBootstrapProvider : public ISessionBootstrapProvider {
+public:
+  JoinMethod GetJoinMethod() const override {
+    return JoinMethod::BrokeredHostedSession;
+  }
+
+  BootstrapHostResult
+  PrepareHostSession(const SessionHostRequest &request) const override {
+    BootstrapHostResult result;
+    result.success = true;
+    result.request = request;
+    result.session.sessionId = request.sessionId;
+    result.session.hostingMode = request.hostingMode;
+    result.session.joinMethod = JoinMethod::BrokeredHostedSession;
+    result.session.bindEndpoint = request.bindEndpoint;
+    result.session.advertisedEndpoint = request.advertisedEndpoint;
+    result.session.buildCompatibilityId = request.buildCompatibilityId;
+    return result;
+  }
+
+  BootstrapJoinResult ResolveJoinSession(const SessionJoinRequest &request,
+                                         HostingMode hostingMode) const override {
+    BootstrapJoinResult result;
+    result.success = true;
+    result.request = request;
+    result.request.targetEndpoint.host = "relay.example.net";
+    result.request.targetEndpoint.port = 9100;
+    result.request.sessionId = "resolved-session-id";
+    result.request.joinCredential = "resolved-secret";
+    result.session.sessionId = "resolved-session-id";
+    result.session.hostingMode = hostingMode;
+    result.session.joinMethod = JoinMethod::BrokeredHostedSession;
+    result.session.resolvedEndpoint = result.request.targetEndpoint;
+    result.session.buildCompatibilityId = "resolved-build";
+    result.session.relayRequired = true;
+    result.session.isJoinCredentialRequired = true;
+    return result;
+  }
+};
+} // namespace
+
 TEST(NetworkSessionManagerIntegrationTest, DedicatedServerStartsServerOnly) {
   FakeSessionRuntime runtime;
   runtime.configuredHostingMode = HostingMode::DedicatedServer;
@@ -97,6 +140,49 @@ TEST(NetworkSessionManagerIntegrationTest, ConfiguredBootstrapEndpointsAreUsedWi
   EXPECT_EQ(runtime.lastClientPort, 7007);
   EXPECT_EQ(manager.GetLastJoinRequest().sessionId, "session-alpha");
   EXPECT_EQ(manager.GetLastJoinRequest().buildCompatibilityId, "build-42");
+}
+
+TEST(NetworkSessionManagerIntegrationTest, UnsupportedBootstrapMethodFailsBeforeTransportStart) {
+  FakeSessionRuntime runtime;
+  runtime.configuredHostingMode = HostingMode::Client;
+  runtime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+
+  NetworkSessionManager manager(runtime, []() {
+    return CommandLineSessionOverrides{};
+  });
+
+  EXPECT_FALSE(manager.StartConfiguredSession());
+  EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Failed);
+  EXPECT_EQ(manager.GetConnectionStatus().disconnectReason,
+            DisconnectReason::BootstrapFailed);
+  EXPECT_EQ(runtime.startClientCalls, 0);
+}
+
+TEST(NetworkSessionManagerIntegrationTest, CustomBootstrapProviderCanRewriteJoinTarget) {
+  FakeSessionRuntime runtime;
+  runtime.configuredHostingMode = HostingMode::Client;
+  runtime.configuredBootstrapConfig.joinMethod = JoinMethod::BrokeredHostedSession;
+  runtime.configuredBootstrapConfig.connectHost = "ignored.example.net";
+  runtime.configuredBootstrapConfig.connectPort = 7007;
+  runtime.configuredBootstrapConfig.sessionId = "requested-session-id";
+  runtime.configuredBootstrapConfig.joinCredential = "requested-secret";
+
+  NetworkSessionManager manager(
+      runtime, []() { return CommandLineSessionOverrides{}; }, {},
+      [](JoinMethod joinMethod) -> SessionBootstrapProviderPtr {
+        if (joinMethod == JoinMethod::BrokeredHostedSession) {
+          return std::make_unique<RewritingBootstrapProvider>();
+        }
+        return CreateBootstrapProvider(joinMethod);
+      });
+
+  ASSERT_TRUE(manager.StartConfiguredSession());
+  EXPECT_EQ(runtime.lastClientHost, "relay.example.net");
+  EXPECT_EQ(runtime.lastClientPort, 9100);
+  EXPECT_EQ(manager.GetLastJoinRequest().sessionId, "resolved-session-id");
+  EXPECT_EQ(manager.GetLastJoinRequest().joinCredential, "resolved-secret");
+  EXPECT_EQ(manager.GetActiveSession().resolvedEndpoint.host, "relay.example.net");
+  EXPECT_TRUE(manager.GetActiveSession().relayRequired);
 }
 
 TEST(NetworkSessionManagerIntegrationTest, ConnectedTransportTransitionsToHandshaking) {

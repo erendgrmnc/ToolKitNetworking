@@ -2,6 +2,7 @@
 #include "NetworkPackets.h"
 #include "NetworkSessionCore.h"
 #include "NetworkSessionTypes.h"
+#include "SessionBootstrapProvider.h"
 #include <gtest/gtest.h>
 
 namespace ToolKit::ToolKitNetworking {
@@ -156,6 +157,47 @@ TEST(NetworkSessionTypesTest, ListenServerJoinFallsBackToBindAddressWhenConnectH
 
   EXPECT_EQ(request.targetEndpoint.host, "192.168.1.20");
   EXPECT_EQ(request.targetEndpoint.port, 7777);
+}
+
+TEST(NetworkSessionTypesTest, DirectBootstrapProviderResolvesConfiguredJoinTarget) {
+  SessionJoinRequest request;
+  request.joinMethod = JoinMethod::DirectAddress;
+  request.sessionId = "public-session-id";
+  request.joinCredential = "secret-token";
+  request.targetEndpoint.host = "dedicated.example.net";
+  request.targetEndpoint.port = 7777;
+  request.buildCompatibilityId = "build-42";
+
+  SessionBootstrapProviderPtr provider =
+      CreateBootstrapProvider(JoinMethod::DirectAddress);
+  ASSERT_NE(provider, nullptr);
+
+  const BootstrapJoinResult result =
+      provider->ResolveJoinSession(request, HostingMode::Client);
+
+  EXPECT_TRUE(result.success);
+  EXPECT_EQ(result.request.targetEndpoint.host, "dedicated.example.net");
+  EXPECT_EQ(result.session.sessionId, "public-session-id");
+  EXPECT_EQ(result.session.resolvedEndpoint.host, "dedicated.example.net");
+  EXPECT_EQ(result.session.resolvedEndpoint.port, 7777);
+  EXPECT_TRUE(result.session.isJoinCredentialRequired);
+}
+
+TEST(NetworkSessionTypesTest, UnsupportedBootstrapProviderFailsWithoutLeakingCredential) {
+  SessionJoinRequest request;
+  request.joinMethod = JoinMethod::BrokeredHostedSession;
+  request.joinCredential = "do-not-log-me";
+
+  SessionBootstrapProviderPtr provider =
+      CreateBootstrapProvider(JoinMethod::BrokeredHostedSession);
+  ASSERT_NE(provider, nullptr);
+
+  const BootstrapJoinResult result =
+      provider->ResolveJoinSession(request, HostingMode::Client);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.disconnectReason, DisconnectReason::BootstrapFailed);
+  EXPECT_EQ(result.detailMessage.find("do-not-log-me"), String::npos);
 }
 
 TEST(NetworkSessionTypesTest, PacketStreamRejectsInvalidSkips) {
