@@ -21,10 +21,12 @@ CommandLineSessionOverrides ReadProcessCommandLineOverrides() {
 NetworkSessionManager::NetworkSessionManager(
     INetworkSessionRuntime &runtime,
     CommandLineOverridesProvider commandLineOverridesProvider,
-    ClockNowProvider clockNowProvider)
+    ClockNowProvider clockNowProvider,
+    BootstrapProviderFactory bootstrapProviderFactory)
     : m_runtime(runtime),
       m_commandLineOverridesProvider(commandLineOverridesProvider),
-      m_clockNowProvider(clockNowProvider) {
+      m_clockNowProvider(clockNowProvider),
+      m_bootstrapProviderFactory(bootstrapProviderFactory) {
   if (!m_commandLineOverridesProvider) {
     m_commandLineOverridesProvider = []() {
       return ReadProcessCommandLineOverrides();
@@ -35,6 +37,11 @@ NetworkSessionManager::NetworkSessionManager(
       const auto now = std::chrono::steady_clock::now().time_since_epoch();
       return static_cast<uint64_t>(
           std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+    };
+  }
+  if (!m_bootstrapProviderFactory) {
+    m_bootstrapProviderFactory = [](JoinMethod joinMethod) {
+      return CreateBootstrapProvider(joinMethod);
     };
   }
 
@@ -49,6 +56,8 @@ bool NetworkSessionManager::StartConfiguredSession() {
   const HostingMode hostingMode =
       overrides.hasHostingModeOverride ? overrides.hostingMode
                                        : ResolveConfiguredHostingMode();
+  SessionBootstrapConfig config = m_runtime.GetSessionBootstrapConfig();
+  config.hostingMode = hostingMode;
 
   m_lastHostRequest = SessionHostRequest{};
   m_lastJoinRequest = SessionJoinRequest{};
@@ -73,15 +82,30 @@ bool NetworkSessionManager::StartConfiguredSession() {
     return true;
   }
 
+  SessionBootstrapProviderPtr bootstrapProvider =
+      m_bootstrapProviderFactory(config.joinMethod);
+  if (!bootstrapProvider) {
+    SetStatus(ConnectionState::Failed, DisconnectReason::BootstrapFailed,
+              "No bootstrap provider is available for the selected join method.");
+    return false;
+  }
+
   if (shouldHost) {
-    SessionBootstrapConfig config = m_runtime.GetSessionBootstrapConfig();
-    config.hostingMode = hostingMode;
     m_lastHostRequest = SessionCore::BuildHostRequest(config, overrides);
-    m_activeSession.sessionId = m_lastHostRequest.sessionId;
-    m_activeSession.bindEndpoint = m_lastHostRequest.bindEndpoint;
-    m_activeSession.advertisedEndpoint = m_lastHostRequest.advertisedEndpoint;
-    m_activeSession.buildCompatibilityId = m_lastHostRequest.buildCompatibilityId;
+    const BootstrapHostResult bootstrapHost =
+        bootstrapProvider->PrepareHostSession(m_lastHostRequest);
+    if (!bootstrapHost.success) {
+      SetStatus(ConnectionState::Failed, bootstrapHost.disconnectReason,
+                bootstrapHost.detailMessage.empty()
+                    ? "Failed to prepare host bootstrap session."
+                    : bootstrapHost.detailMessage);
+      return false;
+    }
+
+    m_lastHostRequest = bootstrapHost.request;
+    ApplyResolvedSession(bootstrapHost.session);
     m_activeSession.isJoinCredentialRequired =
+        m_activeSession.isJoinCredentialRequired ||
         m_lastHostRequest.requireJoinCredential;
 
     SetStatus(ConnectionState::StartingHost);
@@ -93,14 +117,28 @@ bool NetworkSessionManager::StartConfiguredSession() {
   }
 
   if (shouldJoin) {
-    SessionBootstrapConfig config = m_runtime.GetSessionBootstrapConfig();
-    config.hostingMode = hostingMode;
     m_lastJoinRequest = SessionCore::BuildJoinRequest(config, overrides);
-    m_activeSession.joinMethod = m_lastJoinRequest.joinMethod;
-    m_activeSession.resolvedEndpoint = m_lastJoinRequest.targetEndpoint;
-    m_activeSession.sessionId = m_lastJoinRequest.sessionId;
-    m_activeSession.buildCompatibilityId = m_lastJoinRequest.buildCompatibilityId;
+    const BootstrapJoinResult bootstrapJoin =
+        bootstrapProvider->ResolveJoinSession(m_lastJoinRequest, hostingMode);
+    if (!bootstrapJoin.success) {
+      if (shouldHost) {
+        m_runtime.StopSessionTransports();
+      }
+
+      SetStatus(ConnectionState::Failed, bootstrapJoin.disconnectReason,
+                bootstrapJoin.detailMessage.empty()
+                    ? "Failed to resolve join bootstrap session."
+                    : bootstrapJoin.detailMessage);
+      return false;
+    }
+
+    m_lastJoinRequest = bootstrapJoin.request;
+    ApplyResolvedSession(bootstrapJoin.session);
+    if (!m_activeSession.resolvedEndpoint.IsConfigured()) {
+      m_activeSession.resolvedEndpoint = m_lastJoinRequest.targetEndpoint;
+    }
     m_activeSession.isJoinCredentialRequired =
+        m_activeSession.isJoinCredentialRequired ||
         !m_lastJoinRequest.joinCredential.empty();
     m_connectionAttemptStartedAtMs = GetNowMs();
     m_handshakeStartedAtMs = 0;
@@ -272,6 +310,42 @@ HostingMode NetworkSessionManager::ResolveConfiguredHostingMode() const {
 }
 
 uint64_t NetworkSessionManager::GetNowMs() const { return m_clockNowProvider(); }
+
+void NetworkSessionManager::ApplyResolvedSession(
+    const SessionDescriptor &resolvedSession) {
+  if (!resolvedSession.sessionId.empty()) {
+    m_activeSession.sessionId = resolvedSession.sessionId;
+  }
+  if (resolvedSession.hostingMode != HostingMode::None) {
+    m_activeSession.hostingMode = resolvedSession.hostingMode;
+  }
+
+  m_activeSession.joinMethod = resolvedSession.joinMethod;
+
+  if (resolvedSession.bindEndpoint.IsConfigured() ||
+      (!resolvedSession.bindEndpoint.host.empty() &&
+       resolvedSession.bindEndpoint.port == 0)) {
+    m_activeSession.bindEndpoint = resolvedSession.bindEndpoint;
+  }
+  if (resolvedSession.advertisedEndpoint.IsConfigured() ||
+      (!resolvedSession.advertisedEndpoint.host.empty() &&
+       resolvedSession.advertisedEndpoint.port == 0)) {
+    m_activeSession.advertisedEndpoint = resolvedSession.advertisedEndpoint;
+  }
+  if (resolvedSession.resolvedEndpoint.IsConfigured() ||
+      (!resolvedSession.resolvedEndpoint.host.empty() &&
+       resolvedSession.resolvedEndpoint.port == 0)) {
+    m_activeSession.resolvedEndpoint = resolvedSession.resolvedEndpoint;
+  }
+  if (!resolvedSession.buildCompatibilityId.empty()) {
+    m_activeSession.buildCompatibilityId = resolvedSession.buildCompatibilityId;
+  }
+
+  m_activeSession.relayRequired = resolvedSession.relayRequired;
+  m_activeSession.isJoinCredentialRequired =
+      m_activeSession.isJoinCredentialRequired ||
+      resolvedSession.isJoinCredentialRequired;
+}
 
 void NetworkSessionManager::SetStatus(ConnectionState state,
                                       DisconnectReason reason,

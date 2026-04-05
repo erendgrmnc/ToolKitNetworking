@@ -37,6 +37,7 @@ enum class DisconnectReason {
   UserRequested,
   Timeout,
   TransportError,
+  BootstrapFailed,
   VersionMismatch,
   AuthRejected,
   ServerShutdown,

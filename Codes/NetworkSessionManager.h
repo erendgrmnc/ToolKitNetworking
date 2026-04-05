@@ -3,7 +3,9 @@
 #include "INetworkSessionRuntime.h"
 #include "NetworkMacros.h"
 #include "NetworkSessionCore.h"
+#include "SessionBootstrapProvider.h"
 #include <functional>
+#include <memory>
 #include <string>
 
 namespace ToolKit::ToolKitNetworking {
@@ -12,11 +14,14 @@ public:
   using CommandLineOverridesProvider =
       std::function<CommandLineSessionOverrides()>;
   using ClockNowProvider = std::function<uint64_t()>;
+  using BootstrapProviderFactory =
+      std::function<SessionBootstrapProviderPtr(JoinMethod)>;
 
   explicit NetworkSessionManager(
       INetworkSessionRuntime &runtime,
       CommandLineOverridesProvider commandLineOverridesProvider = {},
-      ClockNowProvider clockNowProvider = {});
+      ClockNowProvider clockNowProvider = {},
+      BootstrapProviderFactory bootstrapProviderFactory = {});
   ~NetworkSessionManager() = default;
 
   bool StartConfiguredSession();
@@ -33,6 +38,7 @@ private:
   CommandLineSessionOverrides GetRuntimeCommandLineOverrides() const;
   HostingMode ResolveConfiguredHostingMode() const;
   uint64_t GetNowMs() const;
+  void ApplyResolvedSession(const SessionDescriptor &resolvedSession);
   void SetStatus(ConnectionState state,
                  DisconnectReason reason = DisconnectReason::None,
                  const std::string &detail = "");
@@ -41,6 +47,7 @@ private:
   INetworkSessionRuntime &m_runtime;
   CommandLineOverridesProvider m_commandLineOverridesProvider;
   ClockNowProvider m_clockNowProvider;
+  BootstrapProviderFactory m_bootstrapProviderFactory;
   ConnectionStatus m_connectionStatus;
   SessionDescriptor m_activeSession;
   SessionHostRequest m_lastHostRequest;

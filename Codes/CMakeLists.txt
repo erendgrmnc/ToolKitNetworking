@@ -84,6 +84,7 @@ set(SOURCE
 set(HEADERS 
     NetworkRole.h
     NetworkSessionCore.h
+    SessionBootstrapProvider.h
     PluginMain.h
     NetworkBase.h
     NetworkState.h
@@ -128,6 +129,7 @@ message("Using toolkit output directory: ${TK_OUT_DIR}")
 
 add_library(ToolKitNetworkingCore STATIC
     NetworkSessionCore.cpp
+    SessionBootstrapProvider.cpp
 )
 target_include_directories(ToolKitNetworkingCore PUBLIC
     "${TOOLKIT_DIR}"
