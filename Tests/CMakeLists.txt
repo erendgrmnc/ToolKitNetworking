@@ -21,6 +21,7 @@ else()
 endif()
 
 add_executable(ToolKitNetworking_unit_tests
+    Unit/HandshakeSecurityTests.cpp
     Unit/NetworkSessionTypesTests.cpp
 )
 
@@ -91,3 +92,55 @@ add_test(NAME integration.ToolKitNetworking_integration_tests
 set_tests_properties(integration.ToolKitNetworking_integration_tests PROPERTIES
     LABELS "integration"
 )
+
+if(TK_NET_BUILD_ENGINE_TESTS)
+    add_executable(ToolKitNetworking_engine_tests
+        Integration/ReplicationManagerSecurityTests.cpp
+    )
+    target_include_directories(ToolKitNetworking_engine_tests PRIVATE
+        "${TK_NET_TESTS_DIR}"
+        "${TK_NET_CODES_DIR}"
+        "${TK_NET_CODES_DIR}/enet/include"
+    )
+    target_compile_features(ToolKitNetworking_engine_tests PRIVATE cxx_std_17)
+    target_link_directories(ToolKitNetworking_engine_tests PRIVATE
+        "${TOOLKIT_DIR}/Bin"
+        "${TK_DEPENDECY_OUT_DIR}"
+    )
+    target_link_libraries(ToolKitNetworking_engine_tests PRIVATE
+        ToolKitNetworking
+        ${toolkit}
+        ${imgui}
+        ${editor}
+        GTest::gtest
+        GTest::gtest_main
+    )
+
+    set_target_properties(ToolKitNetworking_engine_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${TK_NET_TESTS_OUTPUT_DIR}"
+        ARCHIVE_OUTPUT_DIRECTORY "${TK_NET_TESTS_OUTPUT_DIR}"
+    )
+
+    if(isMultiConfig)
+        foreach(config ${CMAKE_CONFIGURATION_TYPES})
+            string(TOUPPER ${config} config_upper)
+            set_target_properties(ToolKitNetworking_engine_tests PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${TK_NET_TESTS_OUTPUT_DIR}/${config}"
+                ARCHIVE_OUTPUT_DIRECTORY_${config_upper} "${TK_NET_TESTS_OUTPUT_DIR}/${config}"
+                PDB_OUTPUT_DIRECTORY_${config_upper} "${TK_NET_TESTS_OUTPUT_DIR}/${config}"
+            )
+        endforeach()
+    endif()
+
+    set(TK_NET_ENGINE_TEST_PATH
+        "${TK_NET_CODES_DIR}/Bin\;${TOOLKIT_DIR}/Bin\;${TK_DEPENDECY_OUT_DIR}\;$ENV{PATH}"
+    )
+    add_test(NAME integration.ToolKitNetworking_engine_tests
+        COMMAND ${CMAKE_COMMAND} -E env
+            "PATH=${TK_NET_ENGINE_TEST_PATH}"
+            $<TARGET_FILE:ToolKitNetworking_engine_tests>
+    )
+    set_tests_properties(integration.ToolKitNetworking_engine_tests PROPERTIES
+        LABELS "integration;security;engine"
+    )
+endif()

@@ -35,6 +35,13 @@ TEST(NetworkSessionTypesTest, ConnectionStatusStartsUnauthenticated) {
   EXPECT_EQ(status.disconnectReason, DisconnectReason::None);
   EXPECT_FALSE(status.isAuthenticated);
   EXPECT_FALSE(status.activeEndpoint.IsConfigured());
+  EXPECT_FALSE(status.bindEndpoint.IsConfigured());
+  EXPECT_FALSE(status.advertisedEndpoint.IsConfigured());
+  EXPECT_FALSE(status.resolvedJoinTarget.IsConfigured());
+  EXPECT_EQ(status.bootstrapFailureReason, DisconnectReason::None);
+  EXPECT_TRUE(status.bootstrapDetail.empty());
+  EXPECT_EQ(status.handshakeFailureReason, DisconnectReason::None);
+  EXPECT_TRUE(status.handshakeDetail.empty());
 }
 
 TEST(NetworkSessionTypesTest, LegacyRoleMapsToExpectedHostingMode) {
@@ -183,13 +190,111 @@ TEST(NetworkSessionTypesTest, DirectBootstrapProviderResolvesConfiguredJoinTarge
   EXPECT_TRUE(result.session.isJoinCredentialRequired);
 }
 
+TEST(NetworkSessionTypesTest, RedactSecretReturnsPlaceholderForNonEmptySecret) {
+  EXPECT_TRUE(SessionCore::RedactSecret("").empty());
+  EXPECT_EQ(SessionCore::RedactSecret("secret-token"), "<redacted>");
+}
+
+TEST(NetworkSessionTypesTest, SanitizeDiagnosticDetailRedactsConfiguredSecrets) {
+  const String sanitized = SessionCore::SanitizeDiagnosticDetail(
+      "Bootstrap rejected secret-token during join.",
+      {"secret-token"});
+
+  EXPECT_EQ(sanitized.find("secret-token"), String::npos);
+  EXPECT_NE(sanitized.find("<redacted>"), String::npos);
+}
+
+TEST(NetworkSessionTypesTest, DirectBootstrapProviderRejectsMissingRequiredJoinCredential) {
+  SessionHostRequest request;
+  request.hostingMode = HostingMode::DedicatedServer;
+  request.bindEndpoint.host = "0.0.0.0";
+  request.bindEndpoint.port = 7777;
+  request.requireJoinCredential = true;
+
+  SessionBootstrapProviderPtr provider =
+      CreateBootstrapProvider(JoinMethod::DirectAddress);
+  ASSERT_NE(provider, nullptr);
+
+  const BootstrapHostResult result = provider->PrepareHostSession(request);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.disconnectReason, DisconnectReason::BootstrapFailed);
+}
+
+TEST(NetworkSessionTypesTest, SessionDirectoryProviderRegistersHostAndResolvesJoin) {
+  SessionHostRequest hostRequest;
+  hostRequest.hostingMode = HostingMode::DedicatedServer;
+  hostRequest.bindEndpoint.host = "192.168.1.20";
+  hostRequest.bindEndpoint.port = 7777;
+  hostRequest.advertisedEndpoint.host = "directory.example.net";
+  hostRequest.advertisedEndpoint.port = 7777;
+  hostRequest.buildCompatibilityId = "build-dir-1";
+
+  SessionBootstrapProviderPtr provider =
+      CreateBootstrapProvider(JoinMethod::SessionDirectory);
+  ASSERT_NE(provider, nullptr);
+
+  const BootstrapHostResult hostResult = provider->PrepareHostSession(hostRequest);
+  ASSERT_TRUE(hostResult.success);
+  EXPECT_FALSE(hostResult.request.sessionId.empty());
+  EXPECT_FALSE(hostResult.request.joinCredential.empty());
+  EXPECT_TRUE(hostResult.request.requireJoinCredential);
+
+  SessionJoinRequest joinRequest;
+  joinRequest.joinMethod = JoinMethod::SessionDirectory;
+  joinRequest.sessionId = hostResult.request.sessionId;
+  joinRequest.buildCompatibilityId = "build-dir-1";
+
+  const BootstrapJoinResult joinResult =
+      provider->ResolveJoinSession(joinRequest, HostingMode::Client);
+
+  EXPECT_TRUE(joinResult.success);
+  EXPECT_EQ(joinResult.request.sessionId, hostResult.request.sessionId);
+  EXPECT_EQ(joinResult.request.joinCredential, hostResult.request.joinCredential);
+  EXPECT_EQ(joinResult.request.targetEndpoint.host, "directory.example.net");
+  EXPECT_EQ(joinResult.request.targetEndpoint.port, 7777);
+  EXPECT_EQ(joinResult.session.joinMethod, JoinMethod::SessionDirectory);
+  EXPECT_TRUE(joinResult.session.isJoinCredentialRequired);
+}
+
+TEST(NetworkSessionTypesTest, SessionDirectoryProviderRejectsWildcardOnlyRoute) {
+  SessionHostRequest hostRequest;
+  hostRequest.hostingMode = HostingMode::DedicatedServer;
+  hostRequest.bindEndpoint.host = "0.0.0.0";
+  hostRequest.bindEndpoint.port = 7777;
+
+  SessionBootstrapProviderPtr provider =
+      CreateBootstrapProvider(JoinMethod::SessionDirectory);
+  ASSERT_NE(provider, nullptr);
+
+  const BootstrapHostResult hostResult = provider->PrepareHostSession(hostRequest);
+
+  EXPECT_FALSE(hostResult.success);
+  EXPECT_EQ(hostResult.disconnectReason, DisconnectReason::BootstrapFailed);
+}
+
+TEST(NetworkSessionTypesTest, ValidateJoinBootstrapResultNormalizesResolvedEndpoint) {
+  SessionJoinRequest request;
+  request.targetEndpoint.host = "relay.example.net";
+  request.targetEndpoint.port = 9000;
+
+  SessionDescriptor session;
+  const SessionValidationResult result =
+      SessionCore::ValidateJoinBootstrapResult(request, session);
+
+  EXPECT_TRUE(result.success);
+  EXPECT_EQ(session.resolvedEndpoint.host, "relay.example.net");
+  EXPECT_EQ(session.resolvedEndpoint.port, 9000);
+  EXPECT_EQ(session.resolvedEndpoint.usage, EndpointUsage::ResolvedTransport);
+}
+
 TEST(NetworkSessionTypesTest, UnsupportedBootstrapProviderFailsWithoutLeakingCredential) {
   SessionJoinRequest request;
-  request.joinMethod = JoinMethod::BrokeredHostedSession;
+  request.joinMethod = JoinMethod::LanDiscovery;
   request.joinCredential = "do-not-log-me";
 
   SessionBootstrapProviderPtr provider =
-      CreateBootstrapProvider(JoinMethod::BrokeredHostedSession);
+      CreateBootstrapProvider(JoinMethod::LanDiscovery);
   ASSERT_NE(provider, nullptr);
 
   const BootstrapJoinResult result =
