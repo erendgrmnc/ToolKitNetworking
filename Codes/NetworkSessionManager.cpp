@@ -74,7 +74,7 @@ bool NetworkSessionManager::StartConfiguredSession() {
   }
 
   if (shouldHost) {
-    SessionBootstrapConfig config;
+    SessionBootstrapConfig config = m_runtime.GetSessionBootstrapConfig();
     config.hostingMode = hostingMode;
     m_lastHostRequest = SessionCore::BuildHostRequest(config, overrides);
     m_activeSession.sessionId = m_lastHostRequest.sessionId;
@@ -93,7 +93,7 @@ bool NetworkSessionManager::StartConfiguredSession() {
   }
 
   if (shouldJoin) {
-    SessionBootstrapConfig config;
+    SessionBootstrapConfig config = m_runtime.GetSessionBootstrapConfig();
     config.hostingMode = hostingMode;
     m_lastJoinRequest = SessionCore::BuildJoinRequest(config, overrides);
     m_activeSession.joinMethod = m_lastJoinRequest.joinMethod;
@@ -268,7 +268,7 @@ NetworkSessionManager::GetRuntimeCommandLineOverrides() const {
 }
 
 HostingMode NetworkSessionManager::ResolveConfiguredHostingMode() const {
-  return m_runtime.GetConfiguredHostingMode();
+  return m_runtime.GetSessionBootstrapConfig().hostingMode;
 }
 
 uint64_t NetworkSessionManager::GetNowMs() const { return m_clockNowProvider(); }

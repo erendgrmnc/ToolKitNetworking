@@ -88,6 +88,7 @@ public:
   bool IsDedicatedServer() const;
   bool IsHost() const;
   bool IsClient() const;
+  SessionBootstrapConfig GetSessionBootstrapConfig() const override;
   HostingMode GetConfiguredHostingMode() const override;
   bool StartServerTransport(uint16_t port) override;
   bool StartClientTransport(const String &host, uint16_t port) override;
@@ -110,15 +111,26 @@ public:
   void ClearRegisteredComponents();
   const std::vector<NetworkComponent *> &GetNetworkComponents() const;
 
-TKDeclareParam(MultiChoiceVariant, Role)
-    TKDeclareParam(bool, UseDeltaCompression)
-        TKDeclareParam(MultiChoiceVariant, Preset)
-            TKDeclareParam(bool, EnableInterpolation)
-                TKDeclareParam(bool, EnableExtrapolation)
-                    TKDeclareParam(bool, EnableLagCompensation)
-                        TKDeclareParam(float, BufferTime)
-                            TKDeclareParam(::ToolKit::ScenePtr,
-                                           PlayerPrefab) protected :
+  TKDeclareParam(MultiChoiceVariant, Role)
+  TKDeclareParam(bool, UseDeltaCompression)
+  TKDeclareParam(String, ConnectHost)
+  TKDeclareParam(uint, ConnectPort)
+  TKDeclareParam(uint, ListenPort)
+  TKDeclareParam(String, BindAddress)
+  TKDeclareParam(String, AdvertisedAddress)
+  TKDeclareParam(uint, MaxClients)
+  TKDeclareParam(String, SessionId)
+  TKDeclareParam(String, JoinCredential)
+  TKDeclareParam(bool, RequireJoinCredential)
+  TKDeclareParam(String, BuildCompatibilityId)
+  TKDeclareParam(MultiChoiceVariant, Preset)
+  TKDeclareParam(bool, EnableInterpolation)
+  TKDeclareParam(bool, EnableExtrapolation)
+  TKDeclareParam(bool, EnableLagCompensation)
+  TKDeclareParam(float, BufferTime)
+  TKDeclareParam(::ToolKit::ScenePtr, PlayerPrefab)
+
+protected:
   void UpdateMinimumState();
 
   void ParameterConstructor() override;
@@ -130,6 +142,16 @@ TKDeclareParam(MultiChoiceVariant, Role)
 protected:
   MultiChoiceVariant m_role;
   bool m_useDeltaCompression;
+  String m_connectHost;
+  uint m_connectPort;
+  uint m_listenPort;
+  String m_bindAddress;
+  String m_advertisedAddress;
+  uint m_maxClients;
+  String m_sessionId;
+  String m_joinCredential;
+  bool m_requireJoinCredential;
+  String m_buildCompatibilityId;
   MultiChoiceVariant m_preset;
   bool m_enableInterpolation;
   bool m_enableExtrapolation;

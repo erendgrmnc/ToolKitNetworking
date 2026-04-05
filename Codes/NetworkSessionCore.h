@@ -11,8 +11,17 @@ struct CommandLineSessionOverrides {
   bool hasConnectHostOverride = false;
   String connectHost = "127.0.0.1";
 
-  bool hasPortOverride = false;
-  uint16_t port = 8080;
+  bool hasConnectPortOverride = false;
+  uint16_t connectPort = 8080;
+
+  bool hasListenPortOverride = false;
+  uint16_t listenPort = 8080;
+
+  bool hasBindAddressOverride = false;
+  String bindAddress;
+
+  bool hasAdvertisedAddressOverride = false;
+  String advertisedAddress;
 };
 
 struct SessionBootstrapConfig {

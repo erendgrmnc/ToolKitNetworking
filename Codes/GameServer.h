@@ -7,7 +7,7 @@
 namespace ToolKit::ToolKitNetworking {
 	class GameServer : public NetworkBase, public ITransportHost {
 	public:
-		GameServer(int onPort, int maxClients);
+		GameServer(const std::string& bindAddress, int onPort, int maxClients);
 		~GameServer();
 
 		bool Initialise();
@@ -38,6 +38,7 @@ namespace ToolKit::ToolKitNetworking {
 
 	protected:
 
+		std::string m_bindAddress;
 		int	port;
 		int	clientMax;
 

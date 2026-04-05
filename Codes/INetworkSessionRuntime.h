@@ -8,6 +8,7 @@ class INetworkSessionRuntime {
 public:
   virtual ~INetworkSessionRuntime() = default;
 
+  virtual SessionBootstrapConfig GetSessionBootstrapConfig() const = 0;
   virtual HostingMode GetConfiguredHostingMode() const = 0;
   virtual bool StartServerTransport(uint16_t port) = 0;
   virtual bool StartClientTransport(const String &host, uint16_t port) = 0;

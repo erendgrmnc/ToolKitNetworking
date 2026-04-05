@@ -5,7 +5,9 @@
 
 using namespace ToolKit::ToolKitNetworking;
 
-GameServer::GameServer(int onPort, int maxClients) {
+GameServer::GameServer(const std::string &bindAddress, int onPort,
+                       int maxClients) {
+  m_bindAddress = bindAddress;
   port = onPort;
   clientMax = maxClients;
   m_netHandle = nullptr;
@@ -18,7 +20,14 @@ GameServer::~GameServer() { Shutdown(); }
 
 bool GameServer::Initialise() {
   ENetAddress address;
-  address.host = ENET_HOST_ANY;
+  if (m_bindAddress.empty() || m_bindAddress == "0.0.0.0") {
+    address.host = ENET_HOST_ANY;
+  } else if (enet_address_set_host(&address, m_bindAddress.c_str()) != 0) {
+    std::string logStr =
+        "GameServer::Initialise failed to resolve bind address: " + m_bindAddress;
+    TK_LOG(logStr.c_str());
+    return false;
+  }
   address.port = port;
 
   m_netHandle = enet_host_create(&address, clientMax, 1, 0, 0);

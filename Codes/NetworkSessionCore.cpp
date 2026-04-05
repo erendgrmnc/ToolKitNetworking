@@ -3,6 +3,16 @@
 
 namespace ToolKit::ToolKitNetworking {
 namespace {
+bool TryParseOptionValue(const String &arg, const char *prefix, String &value) {
+  const String key = prefix;
+  if (arg.rfind(key + "=", 0) == 0) {
+    value = arg.substr(key.size() + 1);
+    return true;
+  }
+
+  return false;
+}
+
 std::vector<String> TokenizeCommandLine(const String &commandLine) {
   std::vector<String> args;
   String current;
@@ -89,12 +99,58 @@ SessionCore::ParseCommandLineOverrides(const String &commandLine) {
       try {
         const int parsedPort = std::stoi(args[idx + 1]);
         if (parsedPort > 0 && parsedPort <= 65535) {
-          overrides.hasPortOverride = true;
-          overrides.port = static_cast<uint16_t>(parsedPort);
+          overrides.hasConnectPortOverride = true;
+          overrides.connectPort = static_cast<uint16_t>(parsedPort);
+          overrides.hasListenPortOverride = true;
+          overrides.listenPort = static_cast<uint16_t>(parsedPort);
         }
       } catch (...) {
       }
       ++idx;
+      continue;
+    }
+
+    String optionValue;
+    if (TryParseOptionValue(arg, "-connectHost", optionValue)) {
+      overrides.hasConnectHostOverride = true;
+      overrides.connectHost = optionValue;
+      continue;
+    }
+
+    if (TryParseOptionValue(arg, "-connectPort", optionValue)) {
+      try {
+        const int parsedPort = std::stoi(optionValue);
+        if (parsedPort > 0 && parsedPort <= 65535) {
+          overrides.hasConnectPortOverride = true;
+          overrides.connectPort = static_cast<uint16_t>(parsedPort);
+        }
+      } catch (...) {
+      }
+      continue;
+    }
+
+    if (TryParseOptionValue(arg, "-listenPort", optionValue)) {
+      try {
+        const int parsedPort = std::stoi(optionValue);
+        if (parsedPort > 0 && parsedPort <= 65535) {
+          overrides.hasListenPortOverride = true;
+          overrides.listenPort = static_cast<uint16_t>(parsedPort);
+        }
+      } catch (...) {
+      }
+      continue;
+    }
+
+    if (TryParseOptionValue(arg, "-bindAddress", optionValue)) {
+      overrides.hasBindAddressOverride = true;
+      overrides.bindAddress = optionValue;
+      continue;
+    }
+
+    if (TryParseOptionValue(arg, "-advertisedAddress", optionValue)) {
+      overrides.hasAdvertisedAddressOverride = true;
+      overrides.advertisedAddress = optionValue;
+      continue;
     }
   }
 
@@ -109,12 +165,15 @@ SessionCore::BuildHostRequest(const SessionBootstrapConfig &config,
                                                          : config.hostingMode;
   request.bindEndpoint.usage = EndpointUsage::Bind;
   request.bindEndpoint.protocol = TransportProtocol::EnetUdp;
-  request.bindEndpoint.host = config.bindAddress;
+  request.bindEndpoint.host =
+      overrides.hasBindAddressOverride ? overrides.bindAddress : config.bindAddress;
   request.bindEndpoint.port =
-      overrides.hasPortOverride ? overrides.port : config.listenPort;
+      overrides.hasListenPortOverride ? overrides.listenPort : config.listenPort;
   request.advertisedEndpoint.usage = EndpointUsage::Advertised;
   request.advertisedEndpoint.protocol = TransportProtocol::EnetUdp;
-  request.advertisedEndpoint.host = config.advertisedAddress;
+  request.advertisedEndpoint.host = overrides.hasAdvertisedAddressOverride
+                                        ? overrides.advertisedAddress
+                                        : config.advertisedAddress;
   request.advertisedEndpoint.port = request.bindEndpoint.port;
   request.sessionId = config.sessionId;
   request.joinCredential = config.joinCredential;
@@ -133,10 +192,22 @@ SessionCore::BuildJoinRequest(const SessionBootstrapConfig &config,
   request.joinMethod = config.joinMethod;
   request.targetEndpoint.usage = EndpointUsage::JoinTarget;
   request.targetEndpoint.protocol = TransportProtocol::EnetUdp;
-  request.targetEndpoint.host =
-      overrides.hasConnectHostOverride ? overrides.connectHost : config.connectHost;
+  if (overrides.hasConnectHostOverride) {
+    request.targetEndpoint.host = overrides.connectHost;
+  } else if (!config.connectHost.empty()) {
+    request.targetEndpoint.host = config.connectHost;
+  } else if (config.hostingMode == HostingMode::ListenServer &&
+             !config.bindAddress.empty() && config.bindAddress != "0.0.0.0") {
+    request.targetEndpoint.host = config.bindAddress;
+  } else {
+    request.targetEndpoint.host = "127.0.0.1";
+  }
   request.targetEndpoint.port =
-      overrides.hasPortOverride ? overrides.port : config.connectPort;
+      overrides.hasConnectPortOverride ? overrides.connectPort : config.connectPort;
+  if (config.hostingMode == HostingMode::ListenServer &&
+      !overrides.hasConnectPortOverride && request.targetEndpoint.port == 0) {
+    request.targetEndpoint.port = config.listenPort;
+  }
   request.sessionId = config.sessionId;
   request.joinCredential = config.joinCredential;
   request.buildCompatibilityId =

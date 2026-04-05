@@ -3,6 +3,7 @@
 #include "GameServer.h"
 #include "NetworkSessionManager.h"
 #include "NetworkSpawnService.h"
+#include <algorithm>
 #include <Prefab.h>
 #include <Scene.h>
 #include <ToolKit.h>
@@ -28,6 +29,20 @@ ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
   m_server = nullptr;
   m_client = nullptr;
   m_useDeltaCompression = true;
+  m_connectHost = "127.0.0.1";
+  m_connectPort = 8080;
+  m_listenPort = 8080;
+  m_bindAddress.clear();
+  m_advertisedAddress.clear();
+  m_maxClients = 2;
+  m_sessionId.clear();
+  m_joinCredential.clear();
+  m_requireJoinCredential = false;
+  m_buildCompatibilityId.clear();
+  m_enableInterpolation = true;
+  m_enableExtrapolation = false;
+  m_enableLagCompensation = false;
+  m_bufferTime = 0.1f;
 
   ToolKit::MultiChoiceVariant roleVar;
   {
@@ -52,6 +67,30 @@ ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
   }
   roleVar.CurrentVal.Index = 0;
   m_role = roleVar;
+
+  ToolKit::MultiChoiceVariant presetVar;
+  {
+    ToolKit::ParameterVariant v((int)MovementPreset::Competitive);
+    v.m_name = "Competitive";
+    presetVar.Choices.push_back(v);
+  }
+  {
+    ToolKit::ParameterVariant v((int)MovementPreset::Smooth);
+    v.m_name = "Smooth";
+    presetVar.Choices.push_back(v);
+  }
+  {
+    ToolKit::ParameterVariant v((int)MovementPreset::Vehicle);
+    v.m_name = "Vehicle";
+    presetVar.Choices.push_back(v);
+  }
+  {
+    ToolKit::ParameterVariant v((int)MovementPreset::Custom);
+    v.m_name = "Custom";
+    presetVar.Choices.push_back(v);
+  }
+  presetVar.CurrentVal.Index = 1;
+  m_preset = presetVar;
 
   m_replicationManager = std::make_unique<ReplicationManager>(*this);
   m_sessionManager = std::make_unique<NetworkSessionManager>(*this);
@@ -107,7 +146,13 @@ bool ToolKit::ToolKitNetworking::NetworkManager::StartAsServer(uint16_t port) {
     m_server = nullptr;
   }
 
-  m_server = MakeNewPtr<GameServer>(port, 2);
+  const SessionHostRequest &hostRequest = GetLastHostRequest();
+  const String bindAddress =
+      hostRequest.bindEndpoint.host.empty() ? m_bindAddress : hostRequest.bindEndpoint.host;
+  const uint maxClients = hostRequest.maxClients == 0 ? m_maxClients : hostRequest.maxClients;
+
+  m_server = MakeNewPtr<GameServer>(bindAddress, port,
+                                    static_cast<int>((std::max)(1u, maxClients)));
   if (!m_server || !m_server->IsInitialised()) {
     TK_LOG("Failed to start server transport.");
     m_server = nullptr;
@@ -235,6 +280,25 @@ bool ToolKit::ToolKitNetworking::NetworkManager::IsHost() const {
 
 bool ToolKit::ToolKitNetworking::NetworkManager::IsClient() const {
   return m_role.GetEnum<NetworkRole>() == NetworkRole::Client;
+}
+
+ToolKit::ToolKitNetworking::SessionBootstrapConfig
+ToolKit::ToolKitNetworking::NetworkManager::GetSessionBootstrapConfig() const {
+  SessionBootstrapConfig config;
+  config.hostingMode = GetConfiguredHostingMode();
+  config.connectHost = m_connectHost;
+  config.connectPort =
+      static_cast<uint16_t>((std::min<uint>)(m_connectPort, 65535u));
+  config.listenPort =
+      static_cast<uint16_t>((std::min<uint>)(m_listenPort, 65535u));
+  config.bindAddress = m_bindAddress;
+  config.advertisedAddress = m_advertisedAddress;
+  config.buildCompatibilityId = m_buildCompatibilityId;
+  config.sessionId = m_sessionId;
+  config.joinCredential = m_joinCredential;
+  config.maxClients = (std::max)(1u, m_maxClients);
+  config.requireJoinCredential = m_requireJoinCredential;
+  return config;
 }
 
 const std::vector<ToolKit::ToolKitNetworking::NetworkComponent *> &
@@ -404,9 +468,62 @@ void ToolKit::ToolKitNetworking::NetworkManager::ParameterConstructor() {
               NetworkManagerCategory.Priority, true, true);
   UseDeltaCompression_Define(m_useDeltaCompression, NetworkManagerCategory.Name,
                              NetworkManagerCategory.Priority, true, true);
+  ConnectHost_Define(m_connectHost, NetworkManagerCategory.Name,
+                     NetworkManagerCategory.Priority, true, true);
+  ConnectPort_Define(m_connectPort, NetworkManagerCategory.Name,
+                     NetworkManagerCategory.Priority, true, true);
+  ListenPort_Define(m_listenPort, NetworkManagerCategory.Name,
+                    NetworkManagerCategory.Priority, true, true);
+  BindAddress_Define(m_bindAddress, NetworkManagerCategory.Name,
+                     NetworkManagerCategory.Priority, true, true);
+  AdvertisedAddress_Define(m_advertisedAddress, NetworkManagerCategory.Name,
+                           NetworkManagerCategory.Priority, true, true);
+  MaxClients_Define(m_maxClients, NetworkManagerCategory.Name,
+                    NetworkManagerCategory.Priority, true, true);
+  SessionId_Define(m_sessionId, NetworkManagerCategory.Name,
+                   NetworkManagerCategory.Priority, true, true);
+  JoinCredential_Define(m_joinCredential, NetworkManagerCategory.Name,
+                        NetworkManagerCategory.Priority, true, true);
+  RequireJoinCredential_Define(m_requireJoinCredential, NetworkManagerCategory.Name,
+                               NetworkManagerCategory.Priority, true, true);
+  BuildCompatibilityId_Define(m_buildCompatibilityId, NetworkManagerCategory.Name,
+                              NetworkManagerCategory.Priority, true, true);
+  Preset_Define(m_preset, NetworkManagerCategory.Name, NetworkManagerCategory.Priority,
+                true, true);
+  EnableInterpolation_Define(m_enableInterpolation, NetworkManagerCategory.Name,
+                             NetworkManagerCategory.Priority, true, true);
+  EnableExtrapolation_Define(m_enableExtrapolation, NetworkManagerCategory.Name,
+                             NetworkManagerCategory.Priority, true, true);
+  EnableLagCompensation_Define(m_enableLagCompensation, NetworkManagerCategory.Name,
+                               NetworkManagerCategory.Priority, true, true);
+  BufferTime_Define(m_bufferTime, NetworkManagerCategory.Name,
+                    NetworkManagerCategory.Priority, true, true);
 
   PlayerPrefab_Define(m_playerPrefab, NetworkManagerCategory.Name,
                       NetworkManagerCategory.Priority, true, true);
+
+  const auto validatePort = [](ToolKit::Value &val, String &msg) -> bool {
+    if (uint *port = std::get_if<uint>(&val)) {
+      if (*port == 0 || *port > 65535u) {
+        msg = "Port must be in the range 1-65535.";
+        return false;
+      }
+    }
+    return true;
+  };
+
+  ParamConnectPort().m_validator = validatePort;
+  ParamListenPort().m_validator = validatePort;
+
+  ParamMaxClients().m_validator = [](ToolKit::Value &val, String &msg) -> bool {
+    if (uint *maxClients = std::get_if<uint>(&val)) {
+      if (*maxClients == 0) {
+        msg = "Max clients must be at least 1.";
+        return false;
+      }
+    }
+    return true;
+  };
 
   ParamPlayerPrefab().m_validator = [](ToolKit::Value &val,
                                        String &msg) -> bool {
