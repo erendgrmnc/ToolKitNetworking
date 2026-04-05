@@ -5,6 +5,7 @@
 namespace ToolKit::ToolKitNetworking {
 class FakeSessionRuntime : public INetworkSessionRuntime {
 public:
+  SessionBootstrapConfig configuredBootstrapConfig;
   HostingMode configuredHostingMode = HostingMode::None;
   bool startServerResult = true;
   bool startClientResult = true;
@@ -24,6 +25,12 @@ public:
   int startClientCalls = 0;
   int stopCalls = 0;
   int beginHandshakeCalls = 0;
+
+  SessionBootstrapConfig GetSessionBootstrapConfig() const override {
+    SessionBootstrapConfig config = configuredBootstrapConfig;
+    config.hostingMode = configuredHostingMode;
+    return config;
+  }
 
   HostingMode GetConfiguredHostingMode() const override {
     return configuredHostingMode;

@@ -47,7 +47,7 @@ TEST(NetworkSessionTypesTest, LegacyRoleMapsToExpectedHostingMode) {
             HostingMode::ListenServer);
 }
 
-TEST(NetworkSessionTypesTest, CommandLineOverridesParseHostAndPort) {
+TEST(NetworkSessionTypesTest, CommandLineOverridesParseLegacyHostAndPortFlags) {
   const CommandLineSessionOverrides overrides =
       SessionCore::ParseCommandLineOverrides(
           "\"ToolKitNetworking.exe\" -host -ip 10.0.0.25 -port 9000");
@@ -56,8 +56,31 @@ TEST(NetworkSessionTypesTest, CommandLineOverridesParseHostAndPort) {
   EXPECT_EQ(overrides.hostingMode, HostingMode::ListenServer);
   EXPECT_TRUE(overrides.hasConnectHostOverride);
   EXPECT_EQ(overrides.connectHost, "10.0.0.25");
-  EXPECT_TRUE(overrides.hasPortOverride);
-  EXPECT_EQ(overrides.port, 9000);
+  EXPECT_TRUE(overrides.hasConnectPortOverride);
+  EXPECT_EQ(overrides.connectPort, 9000);
+  EXPECT_TRUE(overrides.hasListenPortOverride);
+  EXPECT_EQ(overrides.listenPort, 9000);
+}
+
+TEST(NetworkSessionTypesTest, CommandLineOverridesParseExplicitEndpointFlags) {
+  const CommandLineSessionOverrides overrides =
+      SessionCore::ParseCommandLineOverrides(
+          "\"ToolKitNetworking.exe\" -client -connectHost=wan.example.net "
+          "-connectPort=7001 -listenPort=7002 -bindAddress=0.0.0.0 "
+          "-advertisedAddress=203.0.113.10");
+
+  EXPECT_TRUE(overrides.hasHostingModeOverride);
+  EXPECT_EQ(overrides.hostingMode, HostingMode::Client);
+  EXPECT_TRUE(overrides.hasConnectHostOverride);
+  EXPECT_EQ(overrides.connectHost, "wan.example.net");
+  EXPECT_TRUE(overrides.hasConnectPortOverride);
+  EXPECT_EQ(overrides.connectPort, 7001);
+  EXPECT_TRUE(overrides.hasListenPortOverride);
+  EXPECT_EQ(overrides.listenPort, 7002);
+  EXPECT_TRUE(overrides.hasBindAddressOverride);
+  EXPECT_EQ(overrides.bindAddress, "0.0.0.0");
+  EXPECT_TRUE(overrides.hasAdvertisedAddressOverride);
+  EXPECT_EQ(overrides.advertisedAddress, "203.0.113.10");
 }
 
 TEST(NetworkSessionTypesTest, CoreBuildsJoinRequestFromConfigAndOverrides) {
@@ -69,8 +92,8 @@ TEST(NetworkSessionTypesTest, CoreBuildsJoinRequestFromConfigAndOverrides) {
   CommandLineSessionOverrides overrides;
   overrides.hasConnectHostOverride = true;
   overrides.connectHost = "10.1.1.5";
-  overrides.hasPortOverride = true;
-  overrides.port = 8888;
+  overrides.hasConnectPortOverride = true;
+  overrides.connectPort = 8888;
 
   const SessionJoinRequest request =
       SessionCore::BuildJoinRequest(config, overrides);
@@ -94,6 +117,45 @@ TEST(NetworkSessionTypesTest, HostRequestUsesHostingModeOverride) {
 
   EXPECT_EQ(request.hostingMode, HostingMode::ListenServer);
   EXPECT_EQ(request.bindEndpoint.port, 7777);
+}
+
+TEST(NetworkSessionTypesTest, HostRequestUsesBindAndAdvertisedEndpointOverrides) {
+  SessionBootstrapConfig config;
+  config.hostingMode = HostingMode::DedicatedServer;
+  config.listenPort = 7777;
+  config.bindAddress = "0.0.0.0";
+  config.advertisedAddress = "198.51.100.10";
+
+  CommandLineSessionOverrides overrides;
+  overrides.hasListenPortOverride = true;
+  overrides.listenPort = 9002;
+  overrides.hasBindAddressOverride = true;
+  overrides.bindAddress = "192.168.1.25";
+  overrides.hasAdvertisedAddressOverride = true;
+  overrides.advertisedAddress = "203.0.113.77";
+
+  const SessionHostRequest request =
+      SessionCore::BuildHostRequest(config, overrides);
+
+  EXPECT_EQ(request.bindEndpoint.host, "192.168.1.25");
+  EXPECT_EQ(request.bindEndpoint.port, 9002);
+  EXPECT_EQ(request.advertisedEndpoint.host, "203.0.113.77");
+  EXPECT_EQ(request.advertisedEndpoint.port, 9002);
+}
+
+TEST(NetworkSessionTypesTest, ListenServerJoinFallsBackToBindAddressWhenConnectHostIsEmpty) {
+  SessionBootstrapConfig config;
+  config.hostingMode = HostingMode::ListenServer;
+  config.connectHost.clear();
+  config.connectPort = 0;
+  config.listenPort = 7777;
+  config.bindAddress = "192.168.1.20";
+
+  const SessionJoinRequest request =
+      SessionCore::BuildJoinRequest(config, CommandLineSessionOverrides{});
+
+  EXPECT_EQ(request.targetEndpoint.host, "192.168.1.20");
+  EXPECT_EQ(request.targetEndpoint.port, 7777);
 }
 
 TEST(NetworkSessionTypesTest, PacketStreamRejectsInvalidSkips) {

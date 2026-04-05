@@ -70,14 +70,33 @@ TEST(NetworkSessionManagerIntegrationTest, OverridesAreAppliedToTransportRequest
     CommandLineSessionOverrides overrides;
     overrides.hasConnectHostOverride = true;
     overrides.connectHost = "10.10.1.12";
-    overrides.hasPortOverride = true;
-    overrides.port = 9001;
+    overrides.hasConnectPortOverride = true;
+    overrides.connectPort = 9001;
     return overrides;
   });
 
   ASSERT_TRUE(manager.StartConfiguredSession());
   EXPECT_EQ(runtime.lastClientHost, "10.10.1.12");
   EXPECT_EQ(runtime.lastClientPort, 9001);
+}
+
+TEST(NetworkSessionManagerIntegrationTest, ConfiguredBootstrapEndpointsAreUsedWithoutOverrides) {
+  FakeSessionRuntime runtime;
+  runtime.configuredHostingMode = HostingMode::Client;
+  runtime.configuredBootstrapConfig.connectHost = "dedicated.example.net";
+  runtime.configuredBootstrapConfig.connectPort = 7007;
+  runtime.configuredBootstrapConfig.sessionId = "session-alpha";
+  runtime.configuredBootstrapConfig.buildCompatibilityId = "build-42";
+
+  NetworkSessionManager manager(runtime, []() {
+    return CommandLineSessionOverrides{};
+  });
+
+  ASSERT_TRUE(manager.StartConfiguredSession());
+  EXPECT_EQ(runtime.lastClientHost, "dedicated.example.net");
+  EXPECT_EQ(runtime.lastClientPort, 7007);
+  EXPECT_EQ(manager.GetLastJoinRequest().sessionId, "session-alpha");
+  EXPECT_EQ(manager.GetLastJoinRequest().buildCompatibilityId, "build-42");
 }
 
 TEST(NetworkSessionManagerIntegrationTest, ConnectedTransportTransitionsToHandshaking) {
@@ -124,8 +143,8 @@ TEST(NetworkSessionManagerIntegrationTest, ClientConnectTimeoutTransitionsToFail
 
   NetworkSessionManager manager(runtime, []() {
     CommandLineSessionOverrides overrides;
-    overrides.hasPortOverride = true;
-    overrides.port = 9001;
+    overrides.hasConnectPortOverride = true;
+    overrides.connectPort = 9001;
     return overrides;
   }, [&clock]() { return clock.NowMs(); });
 
