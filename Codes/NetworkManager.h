@@ -90,6 +90,11 @@ public:
   bool IsClient() const;
   SessionBootstrapConfig GetSessionBootstrapConfig() const override;
   HostingMode GetConfiguredHostingMode() const override;
+  SessionDirectoryBrokerRuntimeConfig
+  GetSessionDirectoryBrokerRuntimeConfig() const override;
+  SessionDirectoryServiceBuildResult
+  BuildSessionDirectoryService(
+      const SessionDirectoryBrokerRuntimeConfig &config) const override;
   bool StartServerTransport(uint16_t port) override;
   bool StartClientTransport(const String &host, uint16_t port) override;
   void StopSessionTransports() override;
@@ -115,6 +120,7 @@ public:
 
   TKDeclareParam(MultiChoiceVariant, Role)
   TKDeclareParam(bool, UseDeltaCompression)
+  TKDeclareParam(MultiChoiceVariant, SessionJoinMethod)
   TKDeclareParam(String, ConnectHost)
   TKDeclareParam(uint, ConnectPort)
   TKDeclareParam(uint, ListenPort)
@@ -125,6 +131,10 @@ public:
   TKDeclareParam(String, JoinCredential)
   TKDeclareParam(bool, RequireJoinCredential)
   TKDeclareParam(String, BuildCompatibilityId)
+  TKDeclareParam(String, SessionDirectoryBrokerUrl)
+  TKDeclareParam(String, SessionDirectoryBrokerAuthTokenEnvVar)
+  TKDeclareParam(uint, SessionDirectoryBrokerTimeoutMs)
+  TKDeclareParam(bool, AllowInsecureSessionDirectoryBrokerForLocalDev)
   TKDeclareParam(MultiChoiceVariant, Preset)
   TKDeclareParam(bool, EnableInterpolation)
   TKDeclareParam(bool, EnableExtrapolation)
@@ -144,6 +154,7 @@ protected:
 protected:
   MultiChoiceVariant m_role;
   bool m_useDeltaCompression;
+  MultiChoiceVariant m_sessionJoinMethod;
   String m_connectHost;
   uint m_connectPort;
   uint m_listenPort;
@@ -154,6 +165,10 @@ protected:
   String m_joinCredential;
   bool m_requireJoinCredential;
   String m_buildCompatibilityId;
+  String m_sessionDirectoryBrokerUrl;
+  String m_sessionDirectoryBrokerAuthTokenEnvVar;
+  uint m_sessionDirectoryBrokerTimeoutMs;
+  bool m_allowInsecureSessionDirectoryBrokerForLocalDev;
   MultiChoiceVariant m_preset;
   bool m_enableInterpolation;
   bool m_enableExtrapolation;

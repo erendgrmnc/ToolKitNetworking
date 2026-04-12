@@ -188,6 +188,19 @@ bool TryParseJoinMethod(const String &value, JoinMethod &method) {
   return false;
 }
 
+bool TryParseResolvedRouteKind(const String &value, ResolvedRouteKind &kind) {
+  if (value == "Direct") {
+    kind = ResolvedRouteKind::Direct;
+    return true;
+  }
+  if (value == "Unknown") {
+    kind = ResolvedRouteKind::Unknown;
+    return true;
+  }
+
+  return false;
+}
+
 SessionDirectoryBrokerError BrokerErrorFromWire(const String &value) {
   if (value == "InvalidRequest") {
     return SessionDirectoryBrokerError::InvalidRequest;
@@ -425,6 +438,42 @@ String ResolveDetail(const String &preferred, const String &fallback) {
                                                                  : preferred);
 }
 
+String ResolveDetail(const String &preferred, const String &fallback,
+                     const std::vector<String> &secrets) {
+  return SessionCore::SanitizeDiagnosticDetail(
+      preferred.empty() ? fallback : preferred, secrets);
+}
+
+std::vector<String> CollectBrokerRequestSecrets(
+    const SessionDirectoryBrokerRegisterRequest &request) {
+  std::vector<String> secrets;
+  if (!request.requestedJoinCredential.empty()) {
+    secrets.push_back(request.requestedJoinCredential);
+  }
+  return secrets;
+}
+
+std::vector<String> CollectBrokerRequestSecrets(
+    const SessionDirectoryBrokerLookupRequest &) {
+  return {};
+}
+
+std::vector<String> CollectBrokerRequestSecrets(
+    const SessionDirectoryBrokerRefreshRequest &request) {
+  if (request.registrationHandle.empty()) {
+    return {};
+  }
+  return {request.registrationHandle};
+}
+
+std::vector<String> CollectBrokerRequestSecrets(
+    const SessionDirectoryBrokerUnregisterRequest &request) {
+  if (request.registrationHandle.empty()) {
+    return {};
+  }
+  return {request.registrationHandle};
+}
+
 SessionDirectoryBrokerRegisterResponse
 MakeRegisterFailure(SessionDirectoryBrokerError errorCode,
                     const String &detail) {
@@ -487,6 +536,8 @@ String SerializeUnregisterRequest(
 bool PopulateSessionDescriptor(const KeyValueMap &values,
                                SessionDescriptor &session,
                                NetworkEndpoint &resolvedJoinRoute,
+                               ResolvedRouteKind &resolvedRouteKind,
+                               uint64_t &resolvedRouteExpiresAtMs,
                                String &joinCredential,
                                String &providerName,
                                uint64_t &joinCredentialExpiresAtMs) {
@@ -572,6 +623,27 @@ bool PopulateSessionDescriptor(const KeyValueMap &values,
   resolvedJoinRoute.usage = EndpointUsage::ResolvedTransport;
   session.resolvedEndpoint = resolvedJoinRoute;
 
+  if (const String *routeKindValue = FindValue<String>(values, "resolvedRouteKind")) {
+    if (!TryParseResolvedRouteKind(*routeKindValue, resolvedRouteKind)) {
+      return false;
+    }
+  } else {
+    resolvedRouteKind = ResolvedRouteKind::Direct;
+  }
+  if (resolvedRouteKind != ResolvedRouteKind::Direct) {
+    return false;
+  }
+  if (values.count("resolvedRouteExpiresAtMs")) {
+    if (!TryParseUint64(values.at("resolvedRouteExpiresAtMs"),
+                        resolvedRouteExpiresAtMs)) {
+      return false;
+    }
+  } else {
+    resolvedRouteExpiresAtMs = 0;
+  }
+  session.resolvedRouteKind = resolvedRouteKind;
+  session.resolvedRouteExpiresAtMs = resolvedRouteExpiresAtMs;
+
   joinCredential =
       values.count("joinCredential") ? values.at("joinCredential") : String{};
   providerName = values.count("providerName") ? values.at("providerName")
@@ -632,6 +704,28 @@ ResponseT ValidateResponseCorrelation(
     return MakeCorrelationFailure<ResponseT>();
   }
 
+  return ResponseT{};
+}
+
+template <typename ResponseT>
+ResponseT ValidateTransportSecurityState(
+    const SessionDirectoryBrokerTransportSecurity &securityState) {
+  if (!securityState.authenticatedBroker) {
+    ResponseT response;
+    response.errorCode = SessionDirectoryBrokerError::Unauthorized;
+    response.detailMessage =
+        "Session directory broker transport is missing authenticated broker access.";
+    return response;
+  }
+  if (!securityState.secureChannel &&
+      !securityState.allowInsecureLocalDevelopment) {
+    return MakeProtocolFailure<ResponseT>(
+        "Session directory broker transport is not running over a trusted secure channel.");
+  }
+  if (securityState.secureChannel && !securityState.hostnameValidated) {
+    return MakeProtocolFailure<ResponseT>(
+        "Session directory broker transport did not validate the broker hostname.");
+  }
   return ResponseT{};
 }
 
@@ -879,6 +973,8 @@ SessionDirectoryBrokerRegisterResponse ParseRegisterResponse(
   }
   if (!PopulateSessionDescriptor(values, response.session,
                                  response.resolvedJoinRoute,
+                                 response.resolvedRouteKind,
+                                 response.resolvedRouteExpiresAtMs,
                                  response.joinCredential, response.providerName,
                                  response.joinCredentialExpiresAtMs)) {
     return MakeRegisterFailure(SessionDirectoryBrokerError::ProtocolError,
@@ -923,6 +1019,8 @@ SessionDirectoryBrokerLookupResponse ParseLookupResponse(
   response.success = true;
   if (!PopulateSessionDescriptor(values, response.session,
                                  response.resolvedJoinRoute,
+                                 response.resolvedRouteKind,
+                                 response.resolvedRouteExpiresAtMs,
                                  response.joinCredential, response.providerName,
                                  response.joinCredentialExpiresAtMs)) {
     return MakeLookupFailure(SessionDirectoryBrokerError::ProtocolError,
@@ -1035,6 +1133,16 @@ SessionDirectoryRemoteBrokerClient::RegisterSession(
                                "No session directory broker transport is configured.");
   }
 
+  const SessionDirectoryBrokerTransportSecurity securityState =
+      m_transport->GetSecurityState();
+  const SessionDirectoryBrokerRegisterResponse securityFailure =
+      ValidateTransportSecurityState<SessionDirectoryBrokerRegisterResponse>(
+          securityState);
+  if (!securityFailure.detailMessage.empty()) {
+    return securityFailure;
+  }
+
+  const std::vector<String> secrets = CollectBrokerRequestSecrets(request);
   SessionDirectoryBrokerTransportRequest transportRequest;
   transportRequest.method = "POST";
   transportRequest.path = "/v1/session-directory/register";
@@ -1049,7 +1157,8 @@ SessionDirectoryRemoteBrokerClient::RegisterSession(
     return MakeRegisterFailure(
         MapTransportError(transportResponse.transportError),
         ResolveDetail(transportResponse.detailMessage,
-                      "Session directory broker transport request failed."));
+                      "Session directory broker transport request failed.",
+                      secrets));
   }
   const SessionDirectoryBrokerRegisterResponse correlationFailure =
       ValidateResponseCorrelation<SessionDirectoryBrokerRegisterResponse>(
@@ -1074,6 +1183,16 @@ SessionDirectoryRemoteBrokerClient::LookupSession(
                              "No session directory broker transport is configured.");
   }
 
+  const SessionDirectoryBrokerTransportSecurity securityState =
+      m_transport->GetSecurityState();
+  const SessionDirectoryBrokerLookupResponse securityFailure =
+      ValidateTransportSecurityState<SessionDirectoryBrokerLookupResponse>(
+          securityState);
+  if (!securityFailure.detailMessage.empty()) {
+    return securityFailure;
+  }
+
+  const std::vector<String> secrets = CollectBrokerRequestSecrets(request);
   SessionDirectoryBrokerTransportRequest transportRequest;
   transportRequest.method = "POST";
   transportRequest.path = "/v1/session-directory/lookup";
@@ -1088,7 +1207,8 @@ SessionDirectoryRemoteBrokerClient::LookupSession(
     return MakeLookupFailure(
         MapTransportError(transportResponse.transportError),
         ResolveDetail(transportResponse.detailMessage,
-                      "Session directory broker transport request failed."));
+                      "Session directory broker transport request failed.",
+                      secrets));
   }
   const SessionDirectoryBrokerLookupResponse correlationFailure =
       ValidateResponseCorrelation<SessionDirectoryBrokerLookupResponse>(
@@ -1116,6 +1236,16 @@ SessionDirectoryRemoteBrokerClient::RefreshSessionRegistration(
     return response;
   }
 
+  const SessionDirectoryBrokerTransportSecurity securityState =
+      m_transport->GetSecurityState();
+  const SessionDirectoryBrokerRefreshResponse securityFailure =
+      ValidateTransportSecurityState<SessionDirectoryBrokerRefreshResponse>(
+          securityState);
+  if (!securityFailure.detailMessage.empty()) {
+    return securityFailure;
+  }
+
+  const std::vector<String> secrets = CollectBrokerRequestSecrets(request);
   SessionDirectoryBrokerTransportRequest transportRequest;
   transportRequest.method = "POST";
   transportRequest.path = "/v1/session-directory/refresh";
@@ -1131,7 +1261,7 @@ SessionDirectoryRemoteBrokerClient::RefreshSessionRegistration(
     response.errorCode = MapTransportError(transportResponse.transportError);
     response.detailMessage = ResolveDetail(
         transportResponse.detailMessage,
-        "Session directory broker transport request failed.");
+        "Session directory broker transport request failed.", secrets);
     return response;
   }
   const SessionDirectoryBrokerRefreshResponse correlationFailure =
@@ -1160,6 +1290,16 @@ SessionDirectoryRemoteBrokerClient::UnregisterSession(
     return response;
   }
 
+  const SessionDirectoryBrokerTransportSecurity securityState =
+      m_transport->GetSecurityState();
+  const SessionDirectoryBrokerUnregisterResponse securityFailure =
+      ValidateTransportSecurityState<SessionDirectoryBrokerUnregisterResponse>(
+          securityState);
+  if (!securityFailure.detailMessage.empty()) {
+    return securityFailure;
+  }
+
+  const std::vector<String> secrets = CollectBrokerRequestSecrets(request);
   SessionDirectoryBrokerTransportRequest transportRequest;
   transportRequest.method = "POST";
   transportRequest.path = "/v1/session-directory/unregister";
@@ -1175,7 +1315,7 @@ SessionDirectoryRemoteBrokerClient::UnregisterSession(
     response.errorCode = MapTransportError(transportResponse.transportError);
     response.detailMessage = ResolveDetail(
         transportResponse.detailMessage,
-        "Session directory broker transport request failed.");
+        "Session directory broker transport request failed.", secrets);
     return response;
   }
   const SessionDirectoryBrokerUnregisterResponse correlationFailure =

@@ -23,14 +23,7 @@ class SessionDirectoryBootstrapProvider : public ISessionBootstrapProvider {
 public:
   explicit SessionDirectoryBootstrapProvider(
       SessionDirectoryServicePtr directoryService)
-      : m_directoryService(directoryService
-                               ? directoryService
-                               // Zero-config SessionDirectory uses a shared
-                               // process-local fake directory so local host and
-                               // join managers can interoperate without explicit
-                               // injection. Production paths should inject a
-                               // real broker-backed service explicitly.
-                               : CreateSharedProcessLocalSessionDirectoryService()) {}
+      : m_directoryService(std::move(directoryService)) {}
 
   JoinMethod GetJoinMethod() const override {
     return JoinMethod::SessionDirectory;
@@ -49,6 +42,12 @@ public:
     directoryRequest.advertisedEndpoint = request.advertisedEndpoint;
     directoryRequest.buildCompatibilityId = request.buildCompatibilityId;
     directoryRequest.requireJoinCredential = request.requireJoinCredential;
+
+    if (!m_directoryService) {
+      result.disconnectReason = DisconnectReason::BootstrapFailed;
+      result.detailMessage = "No session directory service is configured.";
+      return result;
+    }
 
     const SessionDirectoryRegistrationResult directoryResult =
         m_directoryService->RegisterHostedSession(directoryRequest);
@@ -70,6 +69,9 @@ public:
         directoryResult.session.isJoinCredentialRequired ||
         !directoryResult.joinCredential.empty();
     result.session = directoryResult.session;
+    result.session.resolvedRouteKind = directoryResult.resolvedRouteKind;
+    result.session.resolvedRouteExpiresAtMs =
+        directoryResult.resolvedRouteExpiresAtMs;
     return result;
   }
 
@@ -81,6 +83,12 @@ public:
     SessionDirectoryLookupRequest directoryRequest;
     directoryRequest.sessionId = request.sessionId;
     directoryRequest.buildCompatibilityId = request.buildCompatibilityId;
+
+    if (!m_directoryService) {
+      result.disconnectReason = DisconnectReason::BootstrapFailed;
+      result.detailMessage = "No session directory service is configured.";
+      return result;
+    }
 
     const SessionDirectoryLookupResult directoryResult =
         m_directoryService->LookupSession(directoryRequest);
@@ -98,6 +106,9 @@ public:
     result.session = directoryResult.session;
     result.session.resolvedEndpoint = directoryResult.resolvedJoinRoute;
     result.session.resolvedEndpoint.usage = EndpointUsage::ResolvedTransport;
+    result.session.resolvedRouteKind = directoryResult.resolvedRouteKind;
+    result.session.resolvedRouteExpiresAtMs =
+        directoryResult.resolvedRouteExpiresAtMs;
     result.session.isJoinCredentialRequired =
         result.session.isJoinCredentialRequired ||
         !directoryResult.joinCredential.empty();
@@ -107,7 +118,7 @@ public:
   HostedSessionRefreshResult RefreshHostedSession(
       const SessionHostRequest &request) override {
     HostedSessionRefreshResult result;
-    if (request.directoryRegistrationHandle.empty()) {
+    if (request.directoryRegistrationHandle.empty() || !m_directoryService) {
       return result;
     }
 
@@ -129,7 +140,7 @@ public:
   HostedSessionReleaseResult ReleaseHostedSession(
       const SessionHostRequest &request) override {
     HostedSessionReleaseResult result;
-    if (request.directoryRegistrationHandle.empty()) {
+    if (request.directoryRegistrationHandle.empty() || !m_directoryService) {
       return result;
     }
 
@@ -180,6 +191,7 @@ public:
     result.session.advertisedEndpoint = request.advertisedEndpoint;
     result.session.buildCompatibilityId = request.buildCompatibilityId;
     result.session.isJoinCredentialRequired = request.requireJoinCredential;
+    result.session.resolvedRouteKind = ResolvedRouteKind::Direct;
     return result;
   }
 
@@ -200,6 +212,7 @@ public:
     result.session.hostingMode = hostingMode;
     result.session.joinMethod = request.joinMethod;
     result.session.resolvedEndpoint = request.targetEndpoint;
+    result.session.resolvedRouteKind = ResolvedRouteKind::Direct;
     result.session.buildCompatibilityId = request.buildCompatibilityId;
     result.session.isJoinCredentialRequired = !request.joinCredential.empty();
     return result;

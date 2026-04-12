@@ -70,6 +70,7 @@ include_directories(
 # Project Source Files Begin. #
 ###############################
 set(SOURCE 
+    EditorNetworkPlayPlanner.cpp
     PluginMain.cpp
     NetworkBase.cpp
     NetworkState.cpp
@@ -82,12 +83,14 @@ set(SOURCE
     NetworkSpawnService.cpp)
 
 set(HEADERS 
+    EditorNetworkPlayPlanner.h
     NetworkRole.h
     NetworkSessionCore.h
     SessionDirectoryBrokerClient.h
     SessionDirectoryBrokerTransport.h
     SessionDirectoryRemoteBrokerClient.h
     SessionDirectoryService.h
+    SessionDirectoryWinHttpTransport.h
     SessionBootstrapProvider.h
     PluginMain.h
     NetworkBase.h
@@ -136,6 +139,7 @@ add_library(ToolKitNetworkingCore STATIC
     NetworkSessionCore.cpp
     SessionDirectoryRemoteBrokerClient.cpp
     SessionDirectoryService.cpp
+    SessionDirectoryWinHttpTransport.cpp
     SessionBootstrapProvider.cpp
 )
 target_include_directories(ToolKitNetworkingCore PUBLIC
@@ -144,6 +148,7 @@ target_include_directories(ToolKitNetworkingCore PUBLIC
     "${PLUGIN_CODE_DIR}"
 )
 target_compile_features(ToolKitNetworkingCore PUBLIC cxx_std_17)
+target_link_libraries(ToolKitNetworkingCore PUBLIC Winhttp)
 
 add_library(ToolKitNetworkingSessionCore STATIC
     NetworkSessionManager.cpp

@@ -1,5 +1,7 @@
 #include "NetworkSessionManager.h"
 #include <chrono>
+#include <future>
+#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -41,6 +43,28 @@ String AppendWarningMessage(const String &detail, const String &warning) {
   }
   return detail + " Warning: " + warning;
 }
+
+std::shared_ptr<ISessionBootstrapProvider>
+ShareBootstrapProvider(SessionBootstrapProviderPtr provider) {
+  return std::shared_ptr<ISessionBootstrapProvider>(provider.release());
+}
+
+template <typename TaskFn>
+auto LaunchDetachedTask(TaskFn &&taskFn)
+    -> std::shared_future<decltype(taskFn())> {
+  using ResultT = decltype(taskFn());
+  std::packaged_task<ResultT()> task(std::forward<TaskFn>(taskFn));
+  auto future = task.get_future().share();
+  std::thread(std::move(task)).detach();
+  return future;
+}
+
+template <typename ResultT>
+bool IsFutureReady(const std::shared_future<ResultT> &future) {
+  return future.valid() &&
+         future.wait_for(std::chrono::milliseconds(0)) ==
+             std::future_status::ready;
+}
 } // namespace
 
 NetworkSessionManager::NetworkSessionManager(
@@ -64,17 +88,13 @@ NetworkSessionManager::NetworkSessionManager(
           std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
     };
   }
-  if (!m_bootstrapProviderFactory) {
-    m_bootstrapProviderFactory = [](JoinMethod joinMethod) {
-      return CreateBootstrapProvider(joinMethod);
-    };
-  }
 
   m_connectionStatus = ConnectionStatus{};
   m_connectionStatus.detailMessage = "Idle";
 }
 
 NetworkSessionManager::~NetworkSessionManager() {
+  m_pendingBootstrap = PendingBootstrapState{};
   if (m_runtime.HasServerTransport() || m_runtime.HasClientTransport()) {
     m_runtime.StopSessionTransports();
   }
@@ -83,6 +103,22 @@ NetworkSessionManager::~NetworkSessionManager() {
 }
 
 bool NetworkSessionManager::StartConfiguredSession() {
+  if (!ConsumePendingReleaseIfReady()) {
+    return false;
+  }
+  if (!ConsumePendingRefreshIfReady()) {
+    return false;
+  }
+  if (!ConsumePendingBootstrapIfReady()) {
+    return false;
+  }
+  if (m_pendingBootstrap.active) {
+    SetBootstrapFailureStatus(
+        DisconnectReason::BootstrapFailed,
+        "A session directory bootstrap operation is already in progress.");
+    return false;
+  }
+
   const CommandLineSessionOverrides overrides =
       m_commandLineOverridesProvider();
   const HostingMode hostingMode =
@@ -118,8 +154,34 @@ bool NetworkSessionManager::StartConfiguredSession() {
     return true;
   }
 
-  SessionBootstrapProviderPtr bootstrapProvider =
-      m_bootstrapProviderFactory(config.joinMethod);
+  std::shared_ptr<ISessionBootstrapProvider> bootstrapProvider;
+  const bool usesRuntimeDirectoryService =
+      !m_bootstrapProviderFactory && config.joinMethod == JoinMethod::SessionDirectory;
+  if (m_bootstrapProviderFactory) {
+    bootstrapProvider = ShareBootstrapProvider(
+        m_bootstrapProviderFactory(config.joinMethod));
+  } else if (config.joinMethod == JoinMethod::SessionDirectory) {
+    const SessionDirectoryBrokerRuntimeConfig brokerConfig =
+        m_runtime.GetSessionDirectoryBrokerRuntimeConfig();
+    const SessionDirectoryServiceBuildResult serviceBuild =
+        m_runtime.BuildSessionDirectoryService(brokerConfig);
+    if (!serviceBuild.success || !serviceBuild.service) {
+      SetBootstrapFailureStatus(
+          serviceBuild.disconnectReason == DisconnectReason::None
+              ? DisconnectReason::BootstrapFailed
+              : serviceBuild.disconnectReason,
+          SessionCore::SanitizeDiagnosticDetail(
+              serviceBuild.detailMessage.empty()
+                  ? "No session directory service is configured."
+                  : serviceBuild.detailMessage));
+      return false;
+    }
+    bootstrapProvider = ShareBootstrapProvider(
+        CreateBootstrapProvider(config.joinMethod, serviceBuild.service));
+  } else {
+    bootstrapProvider =
+        ShareBootstrapProvider(CreateBootstrapProvider(config.joinMethod));
+  }
   if (!bootstrapProvider) {
     SetBootstrapFailureStatus(
         DisconnectReason::BootstrapFailed,
@@ -133,6 +195,32 @@ bool NetworkSessionManager::StartConfiguredSession() {
     if (config.joinMethod == JoinMethod::SessionDirectory) {
       m_lastHostRequest.requireJoinCredential = true;
     }
+  }
+
+  if (shouldJoin) {
+    m_lastJoinRequest = SessionCore::BuildJoinRequest(config, overrides);
+  }
+
+  if (ShouldUseAsyncSessionDirectoryFlow(usesRuntimeDirectoryService,
+                                         config.joinMethod)) {
+    if (!StartAsyncSessionDirectoryBootstrap(bootstrapProvider, shouldHost,
+                                             shouldJoin, hostingMode)) {
+      SetBootstrapFailureStatus(
+          DisconnectReason::BootstrapFailed,
+          "Failed to queue session directory broker bootstrap work.");
+      return false;
+    }
+
+    const String detail =
+        shouldHost && shouldJoin
+            ? "Registering hosted session and resolving broker join route."
+        : shouldHost ? "Registering hosted session with the broker."
+                     : "Resolving broker join route.";
+    SetStatus(ConnectionState::Resolving, DisconnectReason::None, detail);
+    return true;
+  }
+
+  if (shouldHost) {
     const BootstrapHostResult bootstrapHost =
         bootstrapProvider->PrepareHostSession(m_lastHostRequest);
     if (!bootstrapHost.success) {
@@ -148,8 +236,7 @@ bool NetworkSessionManager::StartConfiguredSession() {
     m_lastHostRequest = bootstrapHost.request;
     ApplyResolvedSession(bootstrapHost.session);
     if (!m_lastHostRequest.directoryRegistrationHandle.empty()) {
-      CaptureHostedSessionRegistration(std::move(bootstrapProvider),
-                                       m_lastHostRequest);
+      CaptureHostedSessionRegistration(bootstrapProvider, m_lastHostRequest);
       bootstrapProviderInterface = m_hostedRegistration.provider.get();
     }
     const SessionValidationResult hostValidation =
@@ -177,7 +264,6 @@ bool NetworkSessionManager::StartConfiguredSession() {
   }
 
   if (shouldJoin) {
-    m_lastJoinRequest = SessionCore::BuildJoinRequest(config, overrides);
     const BootstrapJoinResult bootstrapJoin =
         bootstrapProviderInterface->ResolveJoinSession(m_lastJoinRequest,
                                                        hostingMode);
@@ -249,12 +335,13 @@ bool NetworkSessionManager::StartConfiguredSession() {
 }
 
 void NetworkSessionManager::StopSession(DisconnectReason reason) {
+  m_pendingBootstrap = PendingBootstrapState{};
   if (m_runtime.HasServerTransport() || m_runtime.HasClientTransport()) {
     m_runtime.StopSessionTransports();
   }
 
   const HostedReleaseResult releaseResult =
-      ReleaseHostedSessionRegistration(true);
+      EnsureHostedSessionReleaseScheduled(true);
   String detail = reason == DisconnectReason::UserRequested
                       ? "Session stopped by user request."
                       : "Session stopped.";
@@ -272,6 +359,16 @@ void NetworkSessionManager::StopSession(DisconnectReason reason) {
 }
 
 void NetworkSessionManager::Update() {
+  if (!ConsumePendingReleaseIfReady()) {
+    return;
+  }
+  if (!ConsumePendingRefreshIfReady()) {
+    return;
+  }
+  if (!ConsumePendingBootstrapIfReady()) {
+    return;
+  }
+
   RetryPendingHostedSessionReleaseIfDue();
   if (!RefreshHostedSessionRegistration()) {
     return;
@@ -284,7 +381,7 @@ void NetworkSessionManager::Update() {
       if (m_runtime.HasServerTransport() || m_runtime.HasClientTransport()) {
         m_runtime.StopSessionTransports();
       }
-      ReleaseHostedSessionRegistration(true);
+      EnsureHostedSessionReleaseScheduled(true);
 
       m_connectionAttemptStartedAtMs = 0;
       m_handshakeStartedAtMs = 0;
@@ -300,7 +397,7 @@ void NetworkSessionManager::Update() {
       if (m_runtime.HasServerTransport() || m_runtime.HasClientTransport()) {
         m_runtime.StopSessionTransports();
       }
-      ReleaseHostedSessionRegistration(true);
+      EnsureHostedSessionReleaseScheduled(true);
       m_connectionAttemptStartedAtMs = 0;
       m_handshakeStartedAtMs = 0;
       SetHandshakeFailureStatus(
@@ -325,7 +422,7 @@ void NetworkSessionManager::Update() {
     if (m_runtime.HasServerTransport() || m_runtime.HasClientTransport()) {
       m_runtime.StopSessionTransports();
     }
-    ReleaseHostedSessionRegistration(true);
+    EnsureHostedSessionReleaseScheduled(true);
     m_handshakeStartedAtMs = 0;
     SetHandshakeFailureStatus(
         m_runtime.GetSessionAuthFailureReason(),
@@ -345,7 +442,7 @@ void NetworkSessionManager::Update() {
       if (m_runtime.HasServerTransport() || m_runtime.HasClientTransport()) {
         m_runtime.StopSessionTransports();
       }
-      ReleaseHostedSessionRegistration(true);
+      EnsureHostedSessionReleaseScheduled(true);
 
       m_handshakeStartedAtMs = 0;
       SetHandshakeFailureStatus(DisconnectReason::Timeout,
@@ -443,6 +540,13 @@ void NetworkSessionManager::ApplyResolvedSession(
   if (!resolvedSession.buildCompatibilityId.empty()) {
     m_activeSession.buildCompatibilityId = resolvedSession.buildCompatibilityId;
   }
+  if (resolvedSession.resolvedRouteKind != ResolvedRouteKind::Unknown) {
+    m_activeSession.resolvedRouteKind = resolvedSession.resolvedRouteKind;
+  }
+  if (resolvedSession.resolvedRouteExpiresAtMs != 0) {
+    m_activeSession.resolvedRouteExpiresAtMs =
+        resolvedSession.resolvedRouteExpiresAtMs;
+  }
 
   m_activeSession.relayRequired = resolvedSession.relayRequired;
   m_activeSession.isJoinCredentialRequired =
@@ -456,7 +560,8 @@ bool NetworkSessionManager::HasHostedSessionRegistration() const {
 }
 
 void NetworkSessionManager::CaptureHostedSessionRegistration(
-    SessionBootstrapProviderPtr provider, const SessionHostRequest &request) {
+    std::shared_ptr<ISessionBootstrapProvider> provider,
+    const SessionHostRequest &request, bool asyncLifecycle) {
   m_hostedRegistration = HostedRegistrationState{};
   if (!provider || request.directoryRegistrationHandle.empty()) {
     return;
@@ -468,6 +573,7 @@ void NetworkSessionManager::CaptureHostedSessionRegistration(
   m_hostedRegistration.registrationLeaseIssuedAtMs = GetNowMs();
   m_hostedRegistration.registrationLeaseExpiresAtMs =
       request.directoryRegistrationExpiresAtMs;
+  m_hostedRegistration.asyncLifecycle = asyncLifecycle;
   m_hostedRegistration.releasePending = false;
   m_hostedRegistration.nextReleaseRetryAtMs = 0;
   m_hostedRegistration.lastReleaseFailureReason = DisconnectReason::None;
@@ -476,6 +582,8 @@ void NetworkSessionManager::CaptureHostedSessionRegistration(
 
 void NetworkSessionManager::ClearHostedSessionRegistrationState() {
   m_hostedRegistration = HostedRegistrationState{};
+  m_pendingRefresh = PendingRefreshState{};
+  m_pendingRelease = PendingReleaseState{};
   m_lastHostRequest.directoryRegistrationHandle.clear();
   m_lastHostRequest.directoryRegistrationExpiresAtMs = 0;
 }
@@ -483,6 +591,10 @@ void NetworkSessionManager::ClearHostedSessionRegistrationState() {
 bool NetworkSessionManager::TryClearPendingHostedRegistrationForStart() {
   if (!HasHostedSessionRegistration()) {
     return true;
+  }
+
+  if (!ConsumePendingReleaseIfReady()) {
+    return false;
   }
 
   const SessionHostRequest releaseRequest = m_hostedRegistration.releaseRequest;
@@ -494,6 +606,17 @@ bool NetworkSessionManager::TryClearPendingHostedRegistrationForStart() {
                 ? "The previous hosted session registration is blocked and must "
                   "be cleared before starting a new session."
                 : m_hostedRegistration.lastReleaseFailureDetail,
+            CollectSecrets(releaseRequest, m_lastJoinRequest)));
+    return false;
+  }
+
+  if (m_hostedRegistration.asyncLifecycle) {
+    BeginPendingReleaseAttempt(true);
+    SetBootstrapFailureStatus(
+        DisconnectReason::BootstrapFailed,
+        SessionCore::SanitizeDiagnosticDetail(
+            "The previous hosted session registration is being released. "
+            "Retry start once cleanup completes.",
             CollectSecrets(releaseRequest, m_lastJoinRequest)));
     return false;
   }
@@ -511,6 +634,43 @@ bool NetworkSessionManager::TryClearPendingHostedRegistrationForStart() {
               : releaseResult.detailMessage,
           CollectSecrets(releaseRequest, m_lastJoinRequest)));
   return false;
+}
+
+NetworkSessionManager::HostedReleaseResult
+NetworkSessionManager::EnsureHostedSessionReleaseScheduled(bool forceAttempt,
+                                                          bool allowBlockedRetry) {
+  HostedReleaseResult result;
+  if (!HasHostedSessionRegistration()) {
+    return result;
+  }
+
+  if (!m_hostedRegistration.asyncLifecycle) {
+    return ReleaseHostedSessionRegistration(forceAttempt, allowBlockedRetry);
+  }
+
+  if (!ConsumePendingReleaseIfReady()) {
+    return result;
+  }
+
+  if (m_hostedRegistration.releaseBlocked && !allowBlockedRetry) {
+    result.disconnectReason = m_hostedRegistration.lastReleaseFailureReason;
+    result.detailMessage = m_hostedRegistration.lastReleaseFailureDetail;
+    return result;
+  }
+
+  if (m_pendingRelease.active) {
+    result.attempted = true;
+    result.retryableFailure = m_hostedRegistration.releasePending;
+    if (m_hostedRegistration.releaseBlocked) {
+      result.disconnectReason = m_hostedRegistration.lastReleaseFailureReason;
+      result.detailMessage = m_hostedRegistration.lastReleaseFailureDetail;
+    }
+    return result;
+  }
+
+  BeginPendingReleaseAttempt(forceAttempt, allowBlockedRetry);
+  result.attempted = true;
+  return result;
 }
 
 NetworkSessionManager::HostedReleaseResult
@@ -581,6 +741,11 @@ void NetworkSessionManager::RetryPendingHostedSessionReleaseIfDue() {
     return;
   }
 
+  if (m_hostedRegistration.asyncLifecycle) {
+    BeginPendingReleaseAttempt(false);
+    return;
+  }
+
   (void)ReleaseHostedSessionRegistration(false);
 }
 
@@ -593,6 +758,11 @@ bool NetworkSessionManager::RefreshHostedSessionRegistration() {
   const uint64_t nowMs = GetNowMs();
   const uint64_t refreshAtMs = ComputeHostedSessionRefreshAtMs();
   if (nowMs < refreshAtMs) {
+    return true;
+  }
+
+  if (m_hostedRegistration.asyncLifecycle) {
+    BeginPendingRefreshAttempt();
     return true;
   }
 
@@ -673,6 +843,304 @@ bool NetworkSessionManager::IsRetryableHostedReleaseFailure(
   return reason == DisconnectReason::Timeout ||
          reason == DisconnectReason::TransportError ||
          reason == DisconnectReason::RateLimited;
+}
+
+bool NetworkSessionManager::ShouldUseAsyncSessionDirectoryFlow(
+    bool usesRuntimeDirectoryService, JoinMethod joinMethod) const {
+  return usesRuntimeDirectoryService && joinMethod == JoinMethod::SessionDirectory;
+}
+
+bool NetworkSessionManager::StartAsyncSessionDirectoryBootstrap(
+    std::shared_ptr<ISessionBootstrapProvider> provider, bool shouldHost,
+    bool shouldJoin, HostingMode hostingMode) {
+  if (!provider || m_pendingBootstrap.active) {
+    return false;
+  }
+
+  const SessionHostRequest hostRequest = m_lastHostRequest;
+  const SessionJoinRequest joinRequest = m_lastJoinRequest;
+  m_pendingBootstrap.active = true;
+  m_pendingBootstrap.future = LaunchDetachedTask(
+      [provider = std::move(provider), shouldHost, shouldJoin, hostingMode,
+       hostRequest, joinRequest]() mutable {
+        PendingBootstrapTaskResult result;
+        result.shouldHost = shouldHost;
+        result.shouldJoin = shouldJoin;
+        result.hostingMode = hostingMode;
+        result.provider = std::move(provider);
+        if (result.shouldHost) {
+          result.hostResult =
+              result.provider->PrepareHostSession(hostRequest);
+          if (!result.hostResult.success) {
+            return result;
+          }
+        }
+        if (result.shouldJoin) {
+          result.joinResult = result.provider->ResolveJoinSession(joinRequest,
+                                                                 hostingMode);
+        }
+        return result;
+      });
+  return true;
+}
+
+bool NetworkSessionManager::ConsumePendingBootstrapIfReady() {
+  if (!m_pendingBootstrap.active || !IsFutureReady(m_pendingBootstrap.future)) {
+    return true;
+  }
+
+  const PendingBootstrapTaskResult result = m_pendingBootstrap.future.get();
+  m_pendingBootstrap = PendingBootstrapState{};
+  return ApplyBootstrapResult(result);
+}
+
+bool NetworkSessionManager::ApplyBootstrapResult(
+    const PendingBootstrapTaskResult &result) {
+  ISessionBootstrapProvider *bootstrapProviderInterface = result.provider.get();
+
+  if (result.shouldHost) {
+    if (!result.hostResult.success) {
+      const String detail = SessionCore::SanitizeDiagnosticDetail(
+          result.hostResult.detailMessage.empty()
+              ? "Failed to prepare host bootstrap session."
+              : result.hostResult.detailMessage,
+          CollectSecrets(result.hostResult.request, m_lastJoinRequest));
+      SetBootstrapFailureStatus(result.hostResult.disconnectReason, detail);
+      return false;
+    }
+
+    m_lastHostRequest = result.hostResult.request;
+    ApplyResolvedSession(result.hostResult.session);
+    if (!m_lastHostRequest.directoryRegistrationHandle.empty()) {
+      CaptureHostedSessionRegistration(result.provider, m_lastHostRequest, true);
+      bootstrapProviderInterface = m_hostedRegistration.provider.get();
+    }
+
+    const SessionValidationResult hostValidation =
+        SessionCore::ValidateHostBootstrapResult(m_lastHostRequest);
+    if (!hostValidation.success) {
+      EnsureHostedSessionReleaseScheduled(true);
+      SetBootstrapFailureStatus(
+          hostValidation.disconnectReason,
+          SessionCore::SanitizeDiagnosticDetail(
+              hostValidation.detailMessage,
+              CollectSecrets(m_lastHostRequest, m_lastJoinRequest)));
+      return false;
+    }
+    m_activeSession.isJoinCredentialRequired =
+        m_activeSession.isJoinCredentialRequired ||
+        m_lastHostRequest.requireJoinCredential;
+
+    SetStatus(ConnectionState::StartingHost);
+    if (!m_runtime.StartServerTransport(m_lastHostRequest.bindEndpoint.port)) {
+      EnsureHostedSessionReleaseScheduled(true);
+      SetStatus(ConnectionState::Failed, DisconnectReason::TransportError,
+                "Failed to start server transport.");
+      return false;
+    }
+  }
+
+  if (result.shouldJoin) {
+    if (!result.joinResult.success) {
+      if (result.shouldHost) {
+        m_runtime.StopSessionTransports();
+        EnsureHostedSessionReleaseScheduled(true);
+      }
+
+      const String detail = SessionCore::SanitizeDiagnosticDetail(
+          result.joinResult.detailMessage.empty()
+              ? "Failed to resolve join bootstrap session."
+              : result.joinResult.detailMessage,
+          CollectSecrets(m_lastHostRequest, result.joinResult.request));
+      SetBootstrapFailureStatus(result.joinResult.disconnectReason, detail);
+      return false;
+    }
+
+    m_lastJoinRequest = result.joinResult.request;
+    ApplyResolvedSession(result.joinResult.session);
+    const SessionValidationResult joinValidation =
+        SessionCore::ValidateJoinBootstrapResult(m_lastJoinRequest, m_activeSession);
+    if (!joinValidation.success) {
+      if (result.shouldHost) {
+        m_runtime.StopSessionTransports();
+        EnsureHostedSessionReleaseScheduled(true);
+      }
+      SetBootstrapFailureStatus(
+          joinValidation.disconnectReason,
+          SessionCore::SanitizeDiagnosticDetail(
+              joinValidation.detailMessage,
+              CollectSecrets(m_lastHostRequest, m_lastJoinRequest)));
+      return false;
+    }
+
+    m_activeSession.isJoinCredentialRequired =
+        m_activeSession.isJoinCredentialRequired ||
+        !m_lastJoinRequest.joinCredential.empty();
+    m_connectionAttemptStartedAtMs = GetNowMs();
+    m_handshakeStartedAtMs = 0;
+
+    SetStatus(ConnectionState::Connecting);
+    const NetworkEndpoint &resolvedEndpoint = m_activeSession.resolvedEndpoint;
+    if (!m_runtime.StartClientTransport(resolvedEndpoint.host,
+                                        resolvedEndpoint.port)) {
+      if (result.shouldHost) {
+        m_runtime.StopSessionTransports();
+        EnsureHostedSessionReleaseScheduled(true);
+      }
+      m_connectionAttemptStartedAtMs = 0;
+      m_handshakeStartedAtMs = 0;
+
+      SetStatus(ConnectionState::Failed, DisconnectReason::TransportError,
+                "Failed to create client connection.");
+      return false;
+    }
+
+    if (result.hostingMode == HostingMode::ListenServer) {
+      SetStatus(ConnectionState::Connecting, DisconnectReason::None,
+                "Listen server is waiting for local client handshake.");
+    }
+  } else {
+    m_connectionAttemptStartedAtMs = 0;
+    m_handshakeStartedAtMs = 0;
+    SetStatus(ConnectionState::Connected, DisconnectReason::None,
+              "Dedicated server listening for incoming clients.");
+  }
+
+  return true;
+}
+
+void NetworkSessionManager::BeginPendingReleaseAttempt(bool forceAttempt,
+                                                       bool allowBlockedRetry) {
+  if (!HasHostedSessionRegistration() || m_pendingRelease.active) {
+    return;
+  }
+  if (m_hostedRegistration.releaseBlocked && !allowBlockedRetry) {
+    return;
+  }
+
+  const uint64_t nowMs = GetNowMs();
+  if (m_hostedRegistration.releasePending && !forceAttempt &&
+      nowMs < m_hostedRegistration.nextReleaseRetryAtMs) {
+    return;
+  }
+
+  const auto provider = m_hostedRegistration.provider;
+  const SessionHostRequest releaseRequest = m_hostedRegistration.releaseRequest;
+  m_pendingRelease.active = true;
+  m_pendingRelease.future = LaunchDetachedTask(
+      [provider, releaseRequest]() { return provider->ReleaseHostedSession(releaseRequest); });
+}
+
+bool NetworkSessionManager::ConsumePendingReleaseIfReady() {
+  if (!m_pendingRelease.active || !IsFutureReady(m_pendingRelease.future)) {
+    return true;
+  }
+
+  const HostedSessionReleaseResult releaseResult = m_pendingRelease.future.get();
+  m_pendingRelease = PendingReleaseState{};
+
+  if (!HasHostedSessionRegistration()) {
+    return true;
+  }
+
+  if (releaseResult.success ||
+      releaseResult.disconnectReason == DisconnectReason::SessionClosed) {
+    ClearHostedSessionRegistrationState();
+    return true;
+  }
+
+  const String detail = SessionCore::SanitizeDiagnosticDetail(
+      releaseResult.detailMessage.empty()
+          ? "Failed to release the hosted session directory registration."
+          : releaseResult.detailMessage,
+      CollectSecrets(m_hostedRegistration.releaseRequest, m_lastJoinRequest));
+
+  if (IsRetryableHostedReleaseFailure(releaseResult.disconnectReason)) {
+    m_hostedRegistration.releasePending = true;
+    m_hostedRegistration.releaseBlocked = false;
+    m_hostedRegistration.nextReleaseRetryAtMs =
+        GetNowMs() + HostedRegistrationReleaseRetryMs;
+    m_hostedRegistration.lastReleaseFailureReason =
+        releaseResult.disconnectReason;
+    m_hostedRegistration.lastReleaseFailureDetail = detail;
+    if (m_connectionStatus.state == ConnectionState::Disconnected ||
+        m_connectionStatus.state == ConnectionState::Failed) {
+      m_connectionStatus.detailMessage =
+          AppendWarningMessage(m_connectionStatus.detailMessage, detail);
+    }
+    return true;
+  }
+
+  m_hostedRegistration.releaseBlocked = true;
+  m_hostedRegistration.releasePending = false;
+  m_hostedRegistration.nextReleaseRetryAtMs = 0;
+  m_hostedRegistration.lastReleaseFailureReason =
+      IsTerminalHostedReleaseFailure(releaseResult.disconnectReason)
+          ? releaseResult.disconnectReason
+          : DisconnectReason::ProtocolError;
+  m_hostedRegistration.lastReleaseFailureDetail = detail;
+  if (m_connectionStatus.state == ConnectionState::Disconnected ||
+      m_connectionStatus.state == ConnectionState::Failed) {
+    m_connectionStatus.detailMessage =
+        AppendWarningMessage(m_connectionStatus.detailMessage, detail);
+  }
+  return true;
+}
+
+void NetworkSessionManager::BeginPendingRefreshAttempt() {
+  if (!HasHostedSessionRegistration() || m_pendingRefresh.active ||
+      m_hostedRegistration.releasePending ||
+      m_hostedRegistration.registrationLeaseExpiresAtMs == 0) {
+    return;
+  }
+
+  const auto provider = m_hostedRegistration.provider;
+  const SessionHostRequest releaseRequest = m_hostedRegistration.releaseRequest;
+  m_pendingRefresh.active = true;
+  m_pendingRefresh.future = LaunchDetachedTask(
+      [provider, releaseRequest]() { return provider->RefreshHostedSession(releaseRequest); });
+}
+
+bool NetworkSessionManager::ConsumePendingRefreshIfReady() {
+  if (!m_pendingRefresh.active || !IsFutureReady(m_pendingRefresh.future)) {
+    return true;
+  }
+
+  const HostedSessionRefreshResult refreshResult = m_pendingRefresh.future.get();
+  m_pendingRefresh = PendingRefreshState{};
+  if (!HasHostedSessionRegistration()) {
+    return true;
+  }
+
+  if (!refreshResult.success) {
+    const SessionHostRequest releaseRequest = m_hostedRegistration.releaseRequest;
+    if (m_runtime.HasServerTransport() || m_runtime.HasClientTransport()) {
+      m_runtime.StopSessionTransports();
+    }
+    EnsureHostedSessionReleaseScheduled(true);
+    m_connectionAttemptStartedAtMs = 0;
+    m_handshakeStartedAtMs = 0;
+    SetBootstrapFailureStatus(
+        refreshResult.disconnectReason,
+        SessionCore::SanitizeDiagnosticDetail(
+            refreshResult.detailMessage.empty()
+                ? "Failed to refresh hosted session directory registration."
+                : refreshResult.detailMessage,
+            CollectSecrets(releaseRequest, m_lastJoinRequest)));
+    return false;
+  }
+
+  if (refreshResult.registrationExpiresAtMs != 0) {
+    const uint64_t nowMs = GetNowMs();
+    m_hostedRegistration.registrationLeaseIssuedAtMs = nowMs;
+    m_hostedRegistration.registrationLeaseExpiresAtMs =
+        refreshResult.registrationExpiresAtMs;
+    m_hostedRegistration.releaseRequest.directoryRegistrationExpiresAtMs =
+        refreshResult.registrationExpiresAtMs;
+    m_lastHostRequest.directoryRegistrationExpiresAtMs =
+        refreshResult.registrationExpiresAtMs;
+  }
+  return true;
 }
 
 void NetworkSessionManager::ResetDiagnostics() {

@@ -24,6 +24,8 @@ struct SessionDirectoryRegistrationResult {
   uint64_t registrationExpiresAtMs = 0;
   SessionDescriptor session;
   NetworkEndpoint resolvedJoinRoute;
+  ResolvedRouteKind resolvedRouteKind = ResolvedRouteKind::Unknown;
+  uint64_t resolvedRouteExpiresAtMs = 0;
   String joinCredential;
   String directoryProviderName;
   uint64_t joinCredentialExpiresAtMs = 0;
@@ -40,6 +42,8 @@ struct SessionDirectoryLookupResult {
   String detailMessage;
   SessionDescriptor session;
   NetworkEndpoint resolvedJoinRoute;
+  ResolvedRouteKind resolvedRouteKind = ResolvedRouteKind::Unknown;
+  uint64_t resolvedRouteExpiresAtMs = 0;
   String joinCredential;
   String directoryProviderName;
   uint64_t joinCredentialExpiresAtMs = 0;
@@ -81,6 +85,13 @@ public:
 };
 
 using SessionDirectoryServicePtr = std::shared_ptr<ISessionDirectoryService>;
+
+struct SessionDirectoryServiceBuildResult {
+  bool success = false;
+  DisconnectReason disconnectReason = DisconnectReason::None;
+  String detailMessage;
+  SessionDirectoryServicePtr service;
+};
 
 SessionDirectoryServicePtr CreateProcessLocalSessionDirectoryService(
     std::function<uint64_t()> nowProvider = {});

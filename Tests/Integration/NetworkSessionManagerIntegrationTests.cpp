@@ -2,10 +2,23 @@
 #include "SessionBootstrapProvider.h"
 #include "Support/FakeSessionRuntime.h"
 #include "Support/ManualClock.h"
+#include <chrono>
 #include <gtest/gtest.h>
+#include <thread>
 
 namespace ToolKit::ToolKitNetworking {
 namespace {
+void PumpManagerUntilNotResolving(NetworkSessionManager &manager,
+                                  int maxIterations = 200) {
+  for (int i = 0; i < maxIterations; ++i) {
+    if (manager.GetConnectionStatus().state != ConnectionState::Resolving) {
+      return;
+    }
+    manager.Update();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+}
+
 class RewritingBootstrapProvider : public ISessionBootstrapProvider {
 public:
   JoinMethod GetJoinMethod() const override {
@@ -376,16 +389,30 @@ TEST(NetworkSessionManagerIntegrationTest, SessionDirectoryHostRegistersAndClien
 }
 
 TEST(NetworkSessionManagerIntegrationTest, SessionDirectoryUnknownSessionFailsBeforeTransportStart) {
+  SessionDirectoryServicePtr sharedDirectory =
+      CreateProcessLocalSessionDirectoryService();
   FakeSessionRuntime runtime;
   runtime.configuredHostingMode = HostingMode::Client;
   runtime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  runtime.configuredSessionDirectoryBrokerRuntimeConfig.enabled = true;
+  runtime.configuredSessionDirectoryBrokerRuntimeConfig.baseUrl =
+      "https://broker.example.net";
+  runtime.configuredSessionDirectoryBrokerRuntimeConfig.authToken =
+      "broker-token";
+  runtime.configuredSessionDirectoryBrokerRuntimeConfig.authTokenSource =
+      "TK_BROKER_TOKEN";
   runtime.configuredBootstrapConfig.sessionId = "missing-session";
+  runtime.hasConfiguredSessionDirectoryServiceBuildResult = true;
+  runtime.configuredSessionDirectoryServiceBuildResult.success = true;
+  runtime.configuredSessionDirectoryServiceBuildResult.service = sharedDirectory;
 
   NetworkSessionManager manager(runtime, []() {
     return CommandLineSessionOverrides{};
   });
 
-  EXPECT_FALSE(manager.StartConfiguredSession());
+  ASSERT_TRUE(manager.StartConfiguredSession());
+  PumpManagerUntilNotResolving(manager);
+  EXPECT_EQ(runtime.buildSessionDirectoryServiceCalls, 1);
   EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Failed);
   EXPECT_EQ(manager.GetConnectionStatus().bootstrapFailureReason,
             DisconnectReason::SessionClosed);
@@ -648,35 +675,81 @@ TEST(NetworkSessionManagerIntegrationTest,
 }
 
 TEST(NetworkSessionManagerIntegrationTest,
-     DefaultSessionDirectoryProviderSupportsZeroConfigLocalInterop) {
+     RuntimeSessionDirectoryPathUsesConfiguredServiceBuildResult) {
+  SessionDirectoryServicePtr sharedDirectory =
+      CreateProcessLocalSessionDirectoryService();
   FakeSessionRuntime hostRuntime;
   hostRuntime.configuredHostingMode = HostingMode::DedicatedServer;
   hostRuntime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  hostRuntime.configuredSessionDirectoryBrokerRuntimeConfig.enabled = true;
+  hostRuntime.configuredSessionDirectoryBrokerRuntimeConfig.baseUrl =
+      "https://broker.example.net";
+  hostRuntime.configuredSessionDirectoryBrokerRuntimeConfig.authToken =
+      "broker-token";
+  hostRuntime.configuredSessionDirectoryBrokerRuntimeConfig.authTokenSource =
+      "TK_BROKER_TOKEN";
   hostRuntime.configuredBootstrapConfig.listenPort = 7785;
   hostRuntime.configuredBootstrapConfig.advertisedAddress = "directory.example.net";
   hostRuntime.configuredBootstrapConfig.sessionId = "default-shared-session";
+  hostRuntime.hasConfiguredSessionDirectoryServiceBuildResult = true;
+  hostRuntime.configuredSessionDirectoryServiceBuildResult.success = true;
+  hostRuntime.configuredSessionDirectoryServiceBuildResult.service = sharedDirectory;
 
   NetworkSessionManager hostManager(hostRuntime, []() {
     return CommandLineSessionOverrides{};
   });
   ASSERT_TRUE(hostManager.StartConfiguredSession());
+  PumpManagerUntilNotResolving(hostManager);
+  EXPECT_EQ(hostRuntime.buildSessionDirectoryServiceCalls, 1);
+  EXPECT_EQ(hostManager.GetConnectionStatus().state, ConnectionState::Connected);
 
   FakeSessionRuntime clientRuntime;
   clientRuntime.configuredHostingMode = HostingMode::Client;
   clientRuntime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+  clientRuntime.configuredSessionDirectoryBrokerRuntimeConfig.enabled = true;
+  clientRuntime.configuredSessionDirectoryBrokerRuntimeConfig.baseUrl =
+      "https://broker.example.net";
+  clientRuntime.configuredSessionDirectoryBrokerRuntimeConfig.authToken =
+      "broker-token";
+  clientRuntime.configuredSessionDirectoryBrokerRuntimeConfig.authTokenSource =
+      "TK_BROKER_TOKEN";
   clientRuntime.configuredBootstrapConfig.sessionId =
       hostManager.GetActiveSession().sessionId;
+  clientRuntime.hasConfiguredSessionDirectoryServiceBuildResult = true;
+  clientRuntime.configuredSessionDirectoryServiceBuildResult.success = true;
+  clientRuntime.configuredSessionDirectoryServiceBuildResult.service = sharedDirectory;
 
   NetworkSessionManager clientManager(clientRuntime, []() {
     return CommandLineSessionOverrides{};
   });
   ASSERT_TRUE(clientManager.StartConfiguredSession());
+  PumpManagerUntilNotResolving(clientManager);
+  EXPECT_EQ(clientRuntime.buildSessionDirectoryServiceCalls, 1);
 
   EXPECT_EQ(clientRuntime.startClientCalls, 1);
+  EXPECT_EQ(clientManager.GetConnectionStatus().state, ConnectionState::Connecting);
   EXPECT_EQ(clientManager.GetActiveSession().sessionId,
             hostManager.GetActiveSession().sessionId);
 
   hostManager.StopSession();
+}
+
+TEST(NetworkSessionManagerIntegrationTest,
+     SessionDirectoryWithoutConfiguredRuntimeServiceFailsBeforeTransportStart) {
+  FakeSessionRuntime runtime;
+  runtime.configuredHostingMode = HostingMode::Client;
+  runtime.configuredBootstrapConfig.joinMethod = JoinMethod::SessionDirectory;
+
+  NetworkSessionManager manager(runtime, []() {
+    return CommandLineSessionOverrides{};
+  });
+
+  EXPECT_FALSE(manager.StartConfiguredSession());
+  EXPECT_EQ(runtime.buildSessionDirectoryServiceCalls, 1);
+  EXPECT_EQ(manager.GetConnectionStatus().state, ConnectionState::Failed);
+  EXPECT_EQ(manager.GetConnectionStatus().bootstrapFailureReason,
+            DisconnectReason::BootstrapFailed);
+  EXPECT_EQ(runtime.startClientCalls, 0);
 }
 
 TEST(NetworkSessionManagerIntegrationTest,

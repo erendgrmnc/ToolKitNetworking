@@ -7,6 +7,22 @@
 namespace ToolKit::ToolKitNetworking {
 using SessionDirectoryBrokerHeaderMap = std::map<String, String>;
 
+struct SessionDirectoryBrokerRuntimeConfig {
+  bool enabled = false;
+  String baseUrl;
+  String authToken;
+  String authTokenSource;
+  uint32_t requestTimeoutMs = 5000;
+  bool allowInsecureHttpForLocalDev = false;
+};
+
+struct SessionDirectoryBrokerTransportSecurity {
+  bool secureChannel = false;
+  bool hostnameValidated = false;
+  bool authenticatedBroker = false;
+  bool allowInsecureLocalDevelopment = false;
+};
+
 enum class SessionDirectoryBrokerTransportError {
   None,
   Timeout,
@@ -37,6 +53,8 @@ struct SessionDirectoryBrokerTransportResponse {
 class ISessionDirectoryBrokerTransport {
 public:
   virtual ~ISessionDirectoryBrokerTransport() = default;
+
+  virtual SessionDirectoryBrokerTransportSecurity GetSecurityState() const = 0;
 
   virtual SessionDirectoryBrokerTransportResponse Send(
       const SessionDirectoryBrokerTransportRequest &request) const = 0;

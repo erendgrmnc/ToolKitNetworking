@@ -6,6 +6,12 @@ namespace ToolKit::ToolKitNetworking {
 class FakeSessionRuntime : public INetworkSessionRuntime {
 public:
   SessionBootstrapConfig configuredBootstrapConfig;
+  SessionDirectoryBrokerRuntimeConfig configuredSessionDirectoryBrokerRuntimeConfig;
+  mutable SessionBootstrapConfig lastBuiltSessionDirectoryConfig;
+  mutable SessionDirectoryBrokerRuntimeConfig
+      lastBuiltSessionDirectoryBrokerRuntimeConfig;
+  SessionDirectoryServiceBuildResult configuredSessionDirectoryServiceBuildResult;
+  bool hasConfiguredSessionDirectoryServiceBuildResult = false;
   HostingMode configuredHostingMode = HostingMode::None;
   bool startServerResult = true;
   bool startClientResult = true;
@@ -25,6 +31,7 @@ public:
   int startClientCalls = 0;
   int stopCalls = 0;
   int beginHandshakeCalls = 0;
+  mutable int buildSessionDirectoryServiceCalls = 0;
 
   SessionBootstrapConfig GetSessionBootstrapConfig() const override {
     SessionBootstrapConfig config = configuredBootstrapConfig;
@@ -34,6 +41,26 @@ public:
 
   HostingMode GetConfiguredHostingMode() const override {
     return configuredHostingMode;
+  }
+
+  SessionDirectoryBrokerRuntimeConfig
+  GetSessionDirectoryBrokerRuntimeConfig() const override {
+    return configuredSessionDirectoryBrokerRuntimeConfig;
+  }
+
+  SessionDirectoryServiceBuildResult
+  BuildSessionDirectoryService(
+      const SessionDirectoryBrokerRuntimeConfig &config) const override {
+    ++buildSessionDirectoryServiceCalls;
+    lastBuiltSessionDirectoryBrokerRuntimeConfig = config;
+    if (hasConfiguredSessionDirectoryServiceBuildResult) {
+      return configuredSessionDirectoryServiceBuildResult;
+    }
+
+    SessionDirectoryServiceBuildResult result;
+    result.disconnectReason = DisconnectReason::BootstrapFailed;
+    result.detailMessage = "No session directory service is configured.";
+    return result;
   }
 
   bool StartServerTransport(uint16_t port) override {

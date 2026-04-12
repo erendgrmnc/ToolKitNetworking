@@ -57,6 +57,11 @@ enum class TransportProtocol {
   EnetUdp
 };
 
+enum class ResolvedRouteKind {
+  Unknown,
+  Direct
+};
+
 namespace SessionProtocol {
 constexpr uint Version = 1;
 constexpr uint BuildCompatibilityRevision = 1;
@@ -80,6 +85,8 @@ struct SessionDescriptor {
   NetworkEndpoint bindEndpoint;
   NetworkEndpoint advertisedEndpoint;
   NetworkEndpoint resolvedEndpoint;
+  ResolvedRouteKind resolvedRouteKind = ResolvedRouteKind::Unknown;
+  uint64_t resolvedRouteExpiresAtMs = 0;
   String buildCompatibilityId;
   bool relayRequired = false;
   bool isJoinCredentialRequired = false;

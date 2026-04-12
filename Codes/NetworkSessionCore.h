@@ -1,6 +1,7 @@
 #pragma once
 
 #include "NetworkRole.h"
+#include "SessionDirectoryBrokerTransport.h"
 #include "NetworkSessionTypes.h"
 #include <vector>
 
@@ -61,5 +62,8 @@ SessionValidationResult
 ValidateHostBootstrapResult(const SessionHostRequest &request);
 SessionValidationResult ValidateJoinBootstrapResult(const SessionJoinRequest &request,
                                                     SessionDescriptor &session);
+SessionValidationResult
+ValidateSessionDirectoryBrokerConfig(
+    const SessionDirectoryBrokerRuntimeConfig &config);
 } // namespace SessionCore
 } // namespace ToolKit::ToolKitNetworking

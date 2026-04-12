@@ -35,6 +35,8 @@ struct SessionDirectoryBrokerRegisterResponse {
   uint64_t registrationExpiresAtMs = 0;
   SessionDescriptor session;
   NetworkEndpoint resolvedJoinRoute;
+  ResolvedRouteKind resolvedRouteKind = ResolvedRouteKind::Unknown;
+  uint64_t resolvedRouteExpiresAtMs = 0;
   String joinCredential;
   String providerName;
   uint64_t joinCredentialExpiresAtMs = 0;
@@ -51,6 +53,8 @@ struct SessionDirectoryBrokerLookupResponse {
   String detailMessage;
   SessionDescriptor session;
   NetworkEndpoint resolvedJoinRoute;
+  ResolvedRouteKind resolvedRouteKind = ResolvedRouteKind::Unknown;
+  uint64_t resolvedRouteExpiresAtMs = 0;
   String joinCredential;
   String providerName;
   uint64_t joinCredentialExpiresAtMs = 0;

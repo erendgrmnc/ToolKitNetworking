@@ -40,6 +40,10 @@ public:
 class FakeSessionDirectoryBrokerTransport
     : public ISessionDirectoryBrokerTransport {
 public:
+  SessionDirectoryBrokerTransportSecurity GetSecurityState() const override {
+    return securityState;
+  }
+
   SessionDirectoryBrokerTransportResponse Send(
       const SessionDirectoryBrokerTransportRequest &request) const override {
     lastRequest = request;
@@ -52,6 +56,7 @@ public:
   }
 
   bool autoPopulateCorrelationId = true;
+  SessionDirectoryBrokerTransportSecurity securityState{true, true, true, false};
   mutable SessionDirectoryBrokerTransportRequest lastRequest;
   SessionDirectoryBrokerTransportResponse nextResponse;
 };
@@ -202,6 +207,65 @@ TEST(NetworkSessionTypesTest, HostRequestUsesBindAndAdvertisedEndpointOverrides)
   EXPECT_EQ(request.advertisedEndpoint.port, 9002);
 }
 
+TEST(NetworkSessionTypesTest, SessionDirectoryBrokerConfigRejectsMissingBaseUrl) {
+  SessionDirectoryBrokerRuntimeConfig config;
+  config.enabled = true;
+  config.authToken = "broker-token";
+  config.authTokenSource = "TK_BROKER_TOKEN";
+
+  const SessionValidationResult validation =
+      SessionCore::ValidateSessionDirectoryBrokerConfig(config);
+
+  EXPECT_FALSE(validation.success);
+  EXPECT_EQ(validation.disconnectReason, DisconnectReason::BootstrapFailed);
+  EXPECT_NE(validation.detailMessage.find("base URL"), String::npos);
+}
+
+TEST(NetworkSessionTypesTest, SessionDirectoryBrokerConfigRejectsMissingAuthToken) {
+  SessionDirectoryBrokerRuntimeConfig config;
+  config.enabled = true;
+  config.baseUrl = "https://broker.example.net";
+  config.authTokenSource = "TK_BROKER_TOKEN";
+
+  const SessionValidationResult validation =
+      SessionCore::ValidateSessionDirectoryBrokerConfig(config);
+
+  EXPECT_FALSE(validation.success);
+  EXPECT_EQ(validation.disconnectReason, DisconnectReason::BootstrapFailed);
+  EXPECT_NE(validation.detailMessage.find("resolve the broker auth token"),
+            String::npos);
+}
+
+TEST(NetworkSessionTypesTest, SessionDirectoryBrokerConfigRejectsInsecureHttpWithoutOptIn) {
+  SessionDirectoryBrokerRuntimeConfig config;
+  config.enabled = true;
+  config.baseUrl = "http://broker.example.net";
+  config.authToken = "broker-token";
+  config.authTokenSource = "TK_BROKER_TOKEN";
+
+  const SessionValidationResult validation =
+      SessionCore::ValidateSessionDirectoryBrokerConfig(config);
+
+  EXPECT_FALSE(validation.success);
+  EXPECT_EQ(validation.disconnectReason, DisconnectReason::BootstrapFailed);
+  EXPECT_NE(validation.detailMessage.find("HTTPS"), String::npos);
+}
+
+TEST(NetworkSessionTypesTest, SessionDirectoryBrokerConfigAcceptsSecureBrokerConfig) {
+  SessionDirectoryBrokerRuntimeConfig config;
+  config.enabled = true;
+  config.baseUrl = "https://broker.example.net";
+  config.authToken = "broker-token";
+  config.authTokenSource = "TK_BROKER_TOKEN";
+  config.requestTimeoutMs = 7000;
+
+  const SessionValidationResult validation =
+      SessionCore::ValidateSessionDirectoryBrokerConfig(config);
+
+  EXPECT_TRUE(validation.success);
+  EXPECT_EQ(validation.disconnectReason, DisconnectReason::None);
+}
+
 TEST(NetworkSessionTypesTest, ListenServerJoinFallsBackToBindAddressWhenConnectHostIsEmpty) {
   SessionBootstrapConfig config;
   config.hostingMode = HostingMode::ListenServer;
@@ -272,6 +336,26 @@ TEST(NetworkSessionTypesTest, DirectBootstrapProviderRejectsMissingRequiredJoinC
   EXPECT_EQ(result.disconnectReason, DisconnectReason::BootstrapFailed);
 }
 
+TEST(NetworkSessionTypesTest, SessionDirectoryProviderRequiresExplicitService) {
+  SessionHostRequest request;
+  request.hostingMode = HostingMode::DedicatedServer;
+  request.bindEndpoint.host = "192.168.1.20";
+  request.bindEndpoint.port = 7777;
+  request.advertisedEndpoint.host = "directory.example.net";
+  request.advertisedEndpoint.port = 7777;
+
+  SessionBootstrapProviderPtr provider =
+      CreateBootstrapProvider(JoinMethod::SessionDirectory);
+  ASSERT_NE(provider, nullptr);
+
+  const BootstrapHostResult result = provider->PrepareHostSession(request);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.disconnectReason, DisconnectReason::BootstrapFailed);
+  EXPECT_NE(result.detailMessage.find("No session directory service"),
+            String::npos);
+}
+
 TEST(NetworkSessionTypesTest, SessionDirectoryProviderRegistersHostAndResolvesJoin) {
   SessionHostRequest hostRequest;
   hostRequest.hostingMode = HostingMode::DedicatedServer;
@@ -308,6 +392,7 @@ TEST(NetworkSessionTypesTest, SessionDirectoryProviderRegistersHostAndResolvesJo
   EXPECT_EQ(joinResult.request.targetEndpoint.port, 7777);
   EXPECT_EQ(joinResult.session.joinMethod, JoinMethod::SessionDirectory);
   EXPECT_TRUE(joinResult.session.isJoinCredentialRequired);
+  EXPECT_EQ(joinResult.session.resolvedRouteKind, ResolvedRouteKind::Direct);
 }
 
 TEST(NetworkSessionTypesTest, SessionDirectoryProviderRejectsWildcardOnlyRoute) {
@@ -353,6 +438,8 @@ TEST(NetworkSessionTypesTest, SessionDirectoryServiceReturnsLookupResultFromRegi
   EXPECT_EQ(lookupResult.session.sessionId, registrationResult.session.sessionId);
   EXPECT_EQ(lookupResult.joinCredential, registrationResult.joinCredential);
   EXPECT_EQ(lookupResult.resolvedJoinRoute.host, "broker.example.net");
+  EXPECT_EQ(lookupResult.resolvedRouteKind, ResolvedRouteKind::Direct);
+  EXPECT_GT(lookupResult.resolvedRouteExpiresAtMs, 0u);
   EXPECT_EQ(lookupResult.directoryProviderName, "ProcessLocalSessionDirectory");
 }
 
@@ -613,6 +700,56 @@ TEST(NetworkSessionTypesTest, BrokerBackedSessionDirectoryServiceMapsSuccessfulR
   EXPECT_EQ(lookupResult.resolvedJoinRoute.port, 8123);
 }
 
+TEST(NetworkSessionTypesTest,
+     BrokerBackedSessionDirectoryServiceRedactsSecretsFromFailureDetails) {
+  auto brokerClient = std::make_shared<FakeSessionDirectoryBrokerClient>();
+  brokerClient->registerResponse.errorCode = SessionDirectoryBrokerError::Unauthorized;
+  brokerClient->registerResponse.registrationHandle = "broker-registration";
+  brokerClient->registerResponse.detailMessage =
+      "Rejected join credential opaque-join-token for registration handle broker-registration.";
+
+  SessionDirectoryServicePtr service =
+      CreateBrokerBackedSessionDirectoryService(brokerClient);
+  ASSERT_NE(service, nullptr);
+
+  SessionDirectoryRegistrationRequest registration;
+  registration.hostingMode = HostingMode::DedicatedServer;
+  registration.requestedJoinCredential = "opaque-join-token";
+  registration.bindEndpoint.host = "192.168.1.60";
+  registration.bindEndpoint.port = 8123;
+  registration.advertisedEndpoint.host = "broker.example.net";
+  registration.advertisedEndpoint.port = 8123;
+
+  const SessionDirectoryRegistrationResult registrationResult =
+      service->RegisterHostedSession(registration);
+
+  EXPECT_FALSE(registrationResult.success);
+  EXPECT_EQ(registrationResult.disconnectReason, DisconnectReason::AuthRejected);
+  EXPECT_EQ(registrationResult.detailMessage.find("opaque-join-token"),
+            String::npos);
+  EXPECT_EQ(registrationResult.detailMessage.find("broker-registration"),
+            String::npos);
+}
+
+TEST(NetworkSessionTypesTest,
+     RemoteBrokerClientRejectsUnauthenticatedOrInsecureTransportSecurityState) {
+  auto transport = std::make_shared<FakeSessionDirectoryBrokerTransport>();
+  transport->securityState.secureChannel = false;
+  transport->securityState.hostnameValidated = false;
+  transport->securityState.authenticatedBroker = false;
+  transport->securityState.allowInsecureLocalDevelopment = false;
+
+  SessionDirectoryBrokerClientPtr client =
+      CreateRemoteSessionDirectoryBrokerClient(transport);
+  ASSERT_NE(client, nullptr);
+
+  const SessionDirectoryBrokerLookupResponse response =
+      client->LookupSession(SessionDirectoryBrokerLookupRequest{});
+
+  EXPECT_FALSE(response.success);
+  EXPECT_EQ(response.errorCode, SessionDirectoryBrokerError::Unauthorized);
+}
+
 TEST(NetworkSessionTypesTest, BrokerBackedSessionDirectoryServiceMapsBrokerErrorsToDisconnectReasons) {
   auto brokerClient = std::make_shared<FakeSessionDirectoryBrokerClient>();
   SessionDirectoryServicePtr service =
@@ -705,6 +842,8 @@ TEST(NetworkSessionTypesTest, RemoteBrokerClientSerializesRegisterRequestAndPars
       "advertisedPort=7777\n"
       "resolvedHost=broker.example.net\n"
       "resolvedPort=7777\n"
+      "resolvedRouteKind=Direct\n"
+      "resolvedRouteExpiresAtMs=4600\n"
       "joinCredential=opaque-join-token\n"
       "joinCredentialExpiresAtMs=4500\n"
       "relayRequired=0\n"
@@ -746,8 +885,39 @@ TEST(NetworkSessionTypesTest, RemoteBrokerClientSerializesRegisterRequestAndPars
   EXPECT_EQ(response.registrationExpiresAtMs, 4000u);
   EXPECT_EQ(response.session.sessionId, "broker-session-id");
   EXPECT_EQ(response.resolvedJoinRoute.host, "broker.example.net");
+  EXPECT_EQ(response.resolvedRouteKind, ResolvedRouteKind::Direct);
+  EXPECT_EQ(response.resolvedRouteExpiresAtMs, 4600u);
   EXPECT_EQ(response.joinCredential, "opaque-join-token");
   EXPECT_EQ(response.joinCredentialExpiresAtMs, 4500u);
+}
+
+TEST(NetworkSessionTypesTest, RemoteBrokerClientRejectsUnsupportedResolvedRouteKind) {
+  auto transport = std::make_shared<FakeSessionDirectoryBrokerTransport>();
+  transport->nextResponse.success = true;
+  transport->nextResponse.statusCode = 200;
+  transport->nextResponse.body =
+      "protocolVersion=1\n"
+      "success=1\n"
+      "providerName=RemoteBroker\n"
+      "sessionId=broker-session-id\n"
+      "hostingMode=DedicatedServer\n"
+      "joinMethod=SessionDirectory\n"
+      "resolvedHost=broker.example.net\n"
+      "resolvedPort=7777\n"
+      "resolvedRouteKind=Unknown\n"
+      "joinCredential=opaque-join-token\n"
+      "joinCredentialExpiresAtMs=4500\n"
+      "requireJoinCredential=1\n";
+
+  SessionDirectoryBrokerClientPtr client =
+      CreateRemoteSessionDirectoryBrokerClient(transport);
+  ASSERT_NE(client, nullptr);
+
+  const SessionDirectoryBrokerLookupResponse response =
+      client->LookupSession(SessionDirectoryBrokerLookupRequest{});
+
+  EXPECT_FALSE(response.success);
+  EXPECT_EQ(response.errorCode, SessionDirectoryBrokerError::ProtocolError);
 }
 
 TEST(NetworkSessionTypesTest, RemoteBrokerClientEscapesDelimiterCharactersInRequests) {

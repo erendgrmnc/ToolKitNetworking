@@ -297,4 +297,68 @@ SessionCore::ValidateJoinBootstrapResult(const SessionJoinRequest &request,
 
   return result;
 }
+
+SessionValidationResult SessionCore::ValidateSessionDirectoryBrokerConfig(
+    const SessionDirectoryBrokerRuntimeConfig &config) {
+  SessionValidationResult result;
+  if (!config.enabled) {
+    result.success = false;
+    result.disconnectReason = DisconnectReason::BootstrapFailed;
+    result.detailMessage =
+        "Session directory runtime bootstrap requires broker mode to be enabled.";
+    return result;
+  }
+
+  if (config.baseUrl.empty()) {
+    result.success = false;
+    result.disconnectReason = DisconnectReason::BootstrapFailed;
+    result.detailMessage =
+        "Session directory runtime bootstrap requires a broker base URL.";
+    return result;
+  }
+
+  const bool isHttps = config.baseUrl.rfind("https://", 0) == 0;
+  const bool isHttp = config.baseUrl.rfind("http://", 0) == 0;
+  if (!isHttps && !isHttp) {
+    result.success = false;
+    result.disconnectReason = DisconnectReason::BootstrapFailed;
+    result.detailMessage =
+        "Session directory broker base URL must start with http:// or https://.";
+    return result;
+  }
+
+  if (isHttp && !config.allowInsecureHttpForLocalDev) {
+    result.success = false;
+    result.disconnectReason = DisconnectReason::BootstrapFailed;
+    result.detailMessage =
+        "Session directory broker base URL must use HTTPS unless insecure "
+        "local development is explicitly enabled.";
+    return result;
+  }
+
+  if (config.authTokenSource.empty()) {
+    result.success = false;
+    result.disconnectReason = DisconnectReason::BootstrapFailed;
+    result.detailMessage =
+        "Session directory runtime bootstrap requires a broker auth token source.";
+    return result;
+  }
+
+  if (config.authToken.empty()) {
+    result.success = false;
+    result.disconnectReason = DisconnectReason::BootstrapFailed;
+    result.detailMessage =
+        "Session directory runtime bootstrap could not resolve the broker auth token from the configured source.";
+    return result;
+  }
+
+  if (config.requestTimeoutMs == 0) {
+    result.success = false;
+    result.disconnectReason = DisconnectReason::BootstrapFailed;
+    result.detailMessage =
+        "Session directory broker request timeout must be greater than zero.";
+  }
+
+  return result;
+}
 } // namespace ToolKit::ToolKitNetworking

@@ -2,6 +2,7 @@
 
 #include "NetworkSessionCore.h"
 #include "NetworkSessionTypes.h"
+#include "SessionDirectoryService.h"
 
 namespace ToolKit::ToolKitNetworking {
 class INetworkSessionRuntime {
@@ -10,6 +11,11 @@ public:
 
   virtual SessionBootstrapConfig GetSessionBootstrapConfig() const = 0;
   virtual HostingMode GetConfiguredHostingMode() const = 0;
+  virtual SessionDirectoryBrokerRuntimeConfig
+  GetSessionDirectoryBrokerRuntimeConfig() const = 0;
+  virtual SessionDirectoryServiceBuildResult
+  BuildSessionDirectoryService(
+      const SessionDirectoryBrokerRuntimeConfig &config) const = 0;
   virtual bool StartServerTransport(uint16_t port) = 0;
   virtual bool StartClientTransport(const String &host, uint16_t port) = 0;
   virtual void StopSessionTransports() = 0;

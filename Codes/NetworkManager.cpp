@@ -3,7 +3,10 @@
 #include "GameServer.h"
 #include "NetworkSessionManager.h"
 #include "NetworkSpawnService.h"
+#include "SessionDirectoryRemoteBrokerClient.h"
+#include "SessionDirectoryWinHttpTransport.h"
 #include <algorithm>
+#include <cstdlib>
 #include <Prefab.h>
 #include <Scene.h>
 #include <ToolKit.h>
@@ -22,6 +25,12 @@
 namespace ToolKit::ToolKitNetworking {
 TKDefineClass(NetworkManager, Component);
 NetworkManager *NetworkManager::Instance = nullptr;
+
+namespace {
+JoinMethod JoinMethodFromVariant(const MultiChoiceVariant &variant) {
+  return variant.GetEnum<JoinMethod>();
+}
+} // namespace
 } // namespace ToolKit::ToolKitNetworking
 
 ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
@@ -29,6 +38,8 @@ ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
   m_server = nullptr;
   m_client = nullptr;
   m_useDeltaCompression = true;
+  m_sessionDirectoryBrokerTimeoutMs = 5000;
+  m_allowInsecureSessionDirectoryBrokerForLocalDev = false;
   m_connectHost = "127.0.0.1";
   m_connectPort = 8080;
   m_listenPort = 8080;
@@ -39,6 +50,8 @@ ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
   m_joinCredential.clear();
   m_requireJoinCredential = false;
   m_buildCompatibilityId.clear();
+  m_sessionDirectoryBrokerUrl.clear();
+  m_sessionDirectoryBrokerAuthTokenEnvVar.clear();
   m_enableInterpolation = true;
   m_enableExtrapolation = false;
   m_enableLagCompensation = false;
@@ -69,6 +82,28 @@ ToolKit::ToolKitNetworking::NetworkManager::NetworkManager() {
   m_role = roleVar;
 
   ToolKit::MultiChoiceVariant presetVar;
+  {
+    ToolKit::ParameterVariant v((int)JoinMethod::DirectAddress);
+    v.m_name = "DirectAddress";
+    m_sessionJoinMethod.Choices.push_back(v);
+  }
+  {
+    ToolKit::ParameterVariant v((int)JoinMethod::SessionDirectory);
+    v.m_name = "SessionDirectory";
+    m_sessionJoinMethod.Choices.push_back(v);
+  }
+  {
+    ToolKit::ParameterVariant v((int)JoinMethod::LanDiscovery);
+    v.m_name = "LanDiscovery";
+    m_sessionJoinMethod.Choices.push_back(v);
+  }
+  {
+    ToolKit::ParameterVariant v((int)JoinMethod::BrokeredHostedSession);
+    v.m_name = "BrokeredHostedSession";
+    m_sessionJoinMethod.Choices.push_back(v);
+  }
+  m_sessionJoinMethod.CurrentVal.Index = 0;
+
   {
     ToolKit::ParameterVariant v((int)MovementPreset::Competitive);
     v.m_name = "Competitive";
@@ -286,6 +321,7 @@ ToolKit::ToolKitNetworking::SessionBootstrapConfig
 ToolKit::ToolKitNetworking::NetworkManager::GetSessionBootstrapConfig() const {
   SessionBootstrapConfig config;
   config.hostingMode = GetConfiguredHostingMode();
+  config.joinMethod = JoinMethodFromVariant(m_sessionJoinMethod);
   config.connectHost = m_connectHost;
   config.connectPort =
       static_cast<uint16_t>((std::min<uint>)(m_connectPort, 65535u));
@@ -314,6 +350,59 @@ ToolKit::ToolKitNetworking::NetworkManager::GetNetworkComponents() const {
 ToolKit::ToolKitNetworking::HostingMode
 ToolKit::ToolKitNetworking::NetworkManager::GetConfiguredHostingMode() const {
   return SessionCore::LegacyRoleToHostingMode(m_role.GetEnum<NetworkRole>());
+}
+
+ToolKit::ToolKitNetworking::SessionDirectoryBrokerRuntimeConfig
+ToolKit::ToolKitNetworking::NetworkManager::GetSessionDirectoryBrokerRuntimeConfig()
+    const {
+  SessionDirectoryBrokerRuntimeConfig config;
+  config.enabled =
+      !m_sessionDirectoryBrokerUrl.empty() ||
+      !m_sessionDirectoryBrokerAuthTokenEnvVar.empty();
+  config.baseUrl = m_sessionDirectoryBrokerUrl;
+  config.authTokenSource = m_sessionDirectoryBrokerAuthTokenEnvVar;
+  const char *tokenValue =
+      m_sessionDirectoryBrokerAuthTokenEnvVar.empty()
+          ? nullptr
+          : std::getenv(m_sessionDirectoryBrokerAuthTokenEnvVar.c_str());
+  if (tokenValue != nullptr) {
+    config.authToken = tokenValue;
+  }
+  config.requestTimeoutMs =
+      static_cast<uint32_t>((std::max)(1u, m_sessionDirectoryBrokerTimeoutMs));
+  config.allowInsecureHttpForLocalDev =
+      m_allowInsecureSessionDirectoryBrokerForLocalDev;
+  return config;
+}
+
+ToolKit::ToolKitNetworking::SessionDirectoryServiceBuildResult
+ToolKit::ToolKitNetworking::NetworkManager::BuildSessionDirectoryService(
+    const SessionDirectoryBrokerRuntimeConfig &config) const {
+  SessionDirectoryServiceBuildResult result;
+  const SessionValidationResult validation =
+      SessionCore::ValidateSessionDirectoryBrokerConfig(config);
+  if (!validation.success) {
+    result.disconnectReason = validation.disconnectReason;
+    result.detailMessage = validation.detailMessage;
+    return result;
+  }
+
+  String transportDetail;
+  SessionDirectoryBrokerTransportPtr transport =
+      CreateWinHttpSessionDirectoryBrokerTransport(config, transportDetail);
+  if (!transport) {
+    result.disconnectReason = DisconnectReason::BootstrapFailed;
+    result.detailMessage =
+        transportDetail.empty()
+            ? "Failed to create the session directory broker transport."
+            : transportDetail;
+    return result;
+  }
+
+  result.success = true;
+  result.service = CreateBrokerBackedSessionDirectoryService(
+      CreateRemoteSessionDirectoryBrokerClient(std::move(transport)));
+  return result;
 }
 
 bool ToolKit::ToolKitNetworking::NetworkManager::StartServerTransport(
@@ -475,6 +564,8 @@ void ToolKit::ToolKitNetworking::NetworkManager::ParameterConstructor() {
               NetworkManagerCategory.Priority, true, true);
   UseDeltaCompression_Define(m_useDeltaCompression, NetworkManagerCategory.Name,
                              NetworkManagerCategory.Priority, true, true);
+  SessionJoinMethod_Define(m_sessionJoinMethod, NetworkManagerCategory.Name,
+                           NetworkManagerCategory.Priority, true, true);
   ConnectHost_Define(m_connectHost, NetworkManagerCategory.Name,
                      NetworkManagerCategory.Priority, true, true);
   ConnectPort_Define(m_connectPort, NetworkManagerCategory.Name,
@@ -495,6 +586,18 @@ void ToolKit::ToolKitNetworking::NetworkManager::ParameterConstructor() {
                                NetworkManagerCategory.Priority, true, true);
   BuildCompatibilityId_Define(m_buildCompatibilityId, NetworkManagerCategory.Name,
                               NetworkManagerCategory.Priority, true, true);
+  SessionDirectoryBrokerUrl_Define(m_sessionDirectoryBrokerUrl,
+                                   NetworkManagerCategory.Name,
+                                   NetworkManagerCategory.Priority, true, true);
+  SessionDirectoryBrokerAuthTokenEnvVar_Define(
+      m_sessionDirectoryBrokerAuthTokenEnvVar, NetworkManagerCategory.Name,
+      NetworkManagerCategory.Priority, true, true);
+  SessionDirectoryBrokerTimeoutMs_Define(m_sessionDirectoryBrokerTimeoutMs,
+                                         NetworkManagerCategory.Name,
+                                         NetworkManagerCategory.Priority, true, true);
+  AllowInsecureSessionDirectoryBrokerForLocalDev_Define(
+      m_allowInsecureSessionDirectoryBrokerForLocalDev, NetworkManagerCategory.Name,
+      NetworkManagerCategory.Priority, true, true);
   Preset_Define(m_preset, NetworkManagerCategory.Name, NetworkManagerCategory.Priority,
                 true, true);
   EnableInterpolation_Define(m_enableInterpolation, NetworkManagerCategory.Name,
@@ -521,6 +624,16 @@ void ToolKit::ToolKitNetworking::NetworkManager::ParameterConstructor() {
 
   ParamConnectPort().m_validator = validatePort;
   ParamListenPort().m_validator = validatePort;
+  ParamSessionDirectoryBrokerTimeoutMs().m_validator =
+      [](ToolKit::Value &val, String &msg) -> bool {
+    if (uint *timeoutMs = std::get_if<uint>(&val)) {
+      if (*timeoutMs == 0) {
+        msg = "Broker timeout must be greater than zero.";
+        return false;
+      }
+    }
+    return true;
+  };
 
   ParamMaxClients().m_validator = [](ToolKit::Value &val, String &msg) -> bool {
     if (uint *maxClients = std::get_if<uint>(&val)) {

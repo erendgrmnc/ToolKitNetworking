@@ -6,6 +6,7 @@
 #include <mutex>
 #include <random>
 #include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -15,10 +16,56 @@
 
 namespace ToolKit::ToolKitNetworking {
 namespace {
+std::vector<String> CollectDirectorySecrets(
+    const SessionDirectoryRegistrationRequest &request,
+    const SessionDirectoryBrokerRegisterResponse *response = nullptr) {
+  std::vector<String> secrets;
+  if (!request.requestedJoinCredential.empty()) {
+    secrets.push_back(request.requestedJoinCredential);
+  }
+  if (response != nullptr) {
+    if (!response->registrationHandle.empty()) {
+      secrets.push_back(response->registrationHandle);
+    }
+    if (!response->joinCredential.empty()) {
+      secrets.push_back(response->joinCredential);
+    }
+  }
+  return secrets;
+}
+
+std::vector<String> CollectDirectorySecrets(
+    const SessionDirectoryLookupRequest &,
+    const SessionDirectoryBrokerLookupResponse *response = nullptr) {
+  std::vector<String> secrets;
+  if (response != nullptr && !response->joinCredential.empty()) {
+    secrets.push_back(response->joinCredential);
+  }
+  return secrets;
+}
+
+std::vector<String> CollectDirectorySecrets(
+    const SessionDirectoryRefreshRequest &request) {
+  if (request.registrationHandle.empty()) {
+    return {};
+  }
+  return {request.registrationHandle};
+}
+
+std::vector<String> CollectDirectorySecrets(
+    const SessionDirectoryUnregisterRequest &request) {
+  if (request.registrationHandle.empty()) {
+    return {};
+  }
+  return {request.registrationHandle};
+}
+
 struct SessionDirectoryRecord {
   String registrationHandle;
   SessionDescriptor session;
   NetworkEndpoint resolvedJoinRoute;
+  ResolvedRouteKind resolvedRouteKind = ResolvedRouteKind::Unknown;
+  uint64_t resolvedRouteExpiresAtMs = 0;
   String joinCredential;
   String directoryProviderName;
   uint64_t registrationExpiresAtMs = 0;
@@ -165,6 +212,7 @@ public:
     result.registrationHandle = GenerateOpaqueValue("directory-registration-");
     result.registrationExpiresAtMs = m_nowProvider() + ProcessLocalCredentialTtlMs;
     result.joinCredentialExpiresAtMs = result.registrationExpiresAtMs;
+    result.resolvedRouteExpiresAtMs = result.registrationExpiresAtMs;
     result.joinCredential = request.requestedJoinCredential.empty()
                                 ? GenerateOpaqueValue("directory-key-")
                                 : request.requestedJoinCredential;
@@ -177,14 +225,19 @@ public:
     result.session.advertisedEndpoint.usage = EndpointUsage::Advertised;
     result.session.resolvedEndpoint = joinRoute;
     result.session.resolvedEndpoint.usage = EndpointUsage::ResolvedTransport;
+    result.session.resolvedRouteKind = ResolvedRouteKind::Direct;
+    result.session.resolvedRouteExpiresAtMs = result.resolvedRouteExpiresAtMs;
     result.session.buildCompatibilityId = request.buildCompatibilityId;
     result.session.isJoinCredentialRequired = request.requireJoinCredential;
     result.resolvedJoinRoute = result.session.resolvedEndpoint;
+    result.resolvedRouteKind = result.session.resolvedRouteKind;
 
     SessionDirectoryRecord record;
     record.registrationHandle = result.registrationHandle;
     record.session = result.session;
     record.resolvedJoinRoute = result.resolvedJoinRoute;
+    record.resolvedRouteKind = result.resolvedRouteKind;
+    record.resolvedRouteExpiresAtMs = result.resolvedRouteExpiresAtMs;
     record.joinCredential = result.joinCredential;
     record.directoryProviderName = result.directoryProviderName;
     record.registrationExpiresAtMs = result.registrationExpiresAtMs;
@@ -246,6 +299,8 @@ public:
     result.success = true;
     result.session = it->second.session;
     result.resolvedJoinRoute = it->second.resolvedJoinRoute;
+    result.resolvedRouteKind = it->second.resolvedRouteKind;
+    result.resolvedRouteExpiresAtMs = it->second.resolvedRouteExpiresAtMs;
     result.joinCredential = it->second.joinCredential;
     result.directoryProviderName = it->second.directoryProviderName;
     result.joinCredentialExpiresAtMs = it->second.joinCredentialExpiresAtMs;
@@ -296,6 +351,10 @@ public:
     sessionIt->second.registrationExpiresAtMs =
         m_nowProvider() + ProcessLocalCredentialTtlMs;
     sessionIt->second.joinCredentialExpiresAtMs =
+        sessionIt->second.registrationExpiresAtMs;
+    sessionIt->second.resolvedRouteExpiresAtMs =
+        sessionIt->second.registrationExpiresAtMs;
+    sessionIt->second.session.resolvedRouteExpiresAtMs =
         sessionIt->second.registrationExpiresAtMs;
     result.success = true;
     result.registrationExpiresAtMs = sessionIt->second.registrationExpiresAtMs;
@@ -368,7 +427,8 @@ public:
           SessionCore::SanitizeDiagnosticDetail(
               brokerResponse.detailMessage.empty()
                   ? DefaultBrokerErrorDetail(brokerResponse.errorCode)
-                  : brokerResponse.detailMessage);
+                  : brokerResponse.detailMessage,
+              CollectDirectorySecrets(request, &brokerResponse));
       return result;
     }
 
@@ -377,6 +437,8 @@ public:
     result.registrationExpiresAtMs = brokerResponse.registrationExpiresAtMs;
     result.session = brokerResponse.session;
     result.resolvedJoinRoute = brokerResponse.resolvedJoinRoute;
+    result.resolvedRouteKind = brokerResponse.resolvedRouteKind;
+    result.resolvedRouteExpiresAtMs = brokerResponse.resolvedRouteExpiresAtMs;
     result.joinCredential = brokerResponse.joinCredential;
     result.directoryProviderName = brokerResponse.providerName;
     result.joinCredentialExpiresAtMs =
@@ -406,13 +468,16 @@ public:
           SessionCore::SanitizeDiagnosticDetail(
               brokerResponse.detailMessage.empty()
                   ? DefaultBrokerErrorDetail(brokerResponse.errorCode)
-                  : brokerResponse.detailMessage);
+                  : brokerResponse.detailMessage,
+              CollectDirectorySecrets(request, &brokerResponse));
       return result;
     }
 
     result.success = true;
     result.session = brokerResponse.session;
     result.resolvedJoinRoute = brokerResponse.resolvedJoinRoute;
+    result.resolvedRouteKind = brokerResponse.resolvedRouteKind;
+    result.resolvedRouteExpiresAtMs = brokerResponse.resolvedRouteExpiresAtMs;
     result.joinCredential = brokerResponse.joinCredential;
     result.directoryProviderName = brokerResponse.providerName;
     result.joinCredentialExpiresAtMs =
@@ -441,7 +506,8 @@ public:
           SessionCore::SanitizeDiagnosticDetail(
               brokerResponse.detailMessage.empty()
                   ? DefaultBrokerErrorDetail(brokerResponse.errorCode)
-                  : brokerResponse.detailMessage);
+                  : brokerResponse.detailMessage,
+              CollectDirectorySecrets(request));
       return result;
     }
 
@@ -471,7 +537,8 @@ public:
           SessionCore::SanitizeDiagnosticDetail(
               brokerResponse.detailMessage.empty()
                   ? DefaultBrokerErrorDetail(brokerResponse.errorCode)
-                  : brokerResponse.detailMessage);
+                  : brokerResponse.detailMessage,
+              CollectDirectorySecrets(request));
       return result;
     }
 
