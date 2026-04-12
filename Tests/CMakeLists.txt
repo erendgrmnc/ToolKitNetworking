@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 
 set(TK_NET_TESTS_DIR "${CMAKE_CURRENT_LIST_DIR}")
 get_filename_component(TK_NET_PLUGIN_ROOT_DIR "${TK_NET_TESTS_DIR}/.." ABSOLUTE)
+get_filename_component(TK_NET_PROJECT_ROOT_DIR "${TK_NET_PLUGIN_ROOT_DIR}/../.." ABSOLUTE)
 set(TK_NET_CODES_DIR "${TK_NET_PLUGIN_ROOT_DIR}/Codes")
 set(TK_NET_TESTS_OUTPUT_DIR "${TK_NET_PLUGIN_ROOT_DIR}/Intermediate/Tests")
 
@@ -95,11 +96,14 @@ set_tests_properties(integration.ToolKitNetworking_integration_tests PROPERTIES
 
 if(TK_NET_BUILD_ENGINE_TESTS)
     add_executable(ToolKitNetworking_engine_tests
+        Integration/EditorNetworkPlayPlannerTests.cpp
+        Integration/NetworkPlayBootManifestTests.cpp
         Integration/ReplicationManagerSecurityTests.cpp
     )
     target_include_directories(ToolKitNetworking_engine_tests PRIVATE
         "${TK_NET_TESTS_DIR}"
         "${TK_NET_CODES_DIR}"
+        "${TK_NET_PROJECT_ROOT_DIR}/Codes"
         "${TK_NET_CODES_DIR}/enet/include"
     )
     target_compile_features(ToolKitNetworking_engine_tests PRIVATE cxx_std_17)
