@@ -1,5 +1,5 @@
 <Settings>
-	<Plugin version="v1.0.0" engine="v0.4.6"/>
+	<Plugin version="v1.0.0" engine="v0.4.9"/>
 	<Description name="ToolKitNetworking" brief="Networking plugin for ToolKit game engine."/>
 	<Developer name="Eren Degirmenci" web="" email="erendegirmenci.354@gmail.com"/>
 </Settings>

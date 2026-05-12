@@ -8,6 +8,7 @@
 #include "PluginMain.h"
 
 #include "Editor/App.h"
+#include "Editor/EditorRuntimeLauncher.h"
 #include "EditorNetworkPlayPlanner.h"
 #include "Editor/EditorScene.h"
 #include "Editor/EditorMetaKeys.h"
@@ -16,6 +17,8 @@
 #include "NetworkManager.h"
 #include "NetworkSessionCore.h"
 #include "ToolKit/Scene.h"
+
+#include <PluginManager.h>
 
 #include <algorithm>
 #include <chrono>
@@ -40,35 +43,6 @@ namespace ToolKit
     namespace
     {
       using namespace ToolKitNetworking;
-
-      String QuoteArgument(const String& value)
-      {
-        return "\"" + value + "\"";
-      }
-
-      void AddFlag(std::ostringstream& builder, const String& flag)
-      {
-        if (!flag.empty())
-        {
-          builder << ' ' << flag;
-        }
-      }
-
-      void AddOption(std::ostringstream& builder, const char* key, const String& value)
-      {
-        if (!value.empty())
-        {
-          builder << ' ' << key << '=' << QuoteArgument(value);
-        }
-      }
-
-      void AddOption(std::ostringstream& builder, const char* key, uint16_t value)
-      {
-        if (value != 0)
-        {
-          builder << ' ' << key << '=' << value;
-        }
-      }
 
       bool CopyConfigDirectory(const String& sourceDir, const String& targetDir)
       {
@@ -95,6 +69,183 @@ namespace ToolKit
         }
       }
 
+      StringArray CollectRuntimePluginNames()
+      {
+        StringArray pluginNames;
+        if (PluginManager* pluginManager = GetPluginManager())
+        {
+          for (const PluginRegister& plugin : pluginManager->GetRegisteredPlugins())
+          {
+            if (plugin.m_plugin != nullptr && plugin.m_loaded &&
+                plugin.m_plugin->GetType() != PluginType::Editor)
+            {
+              pluginNames.push_back(plugin.m_name);
+            }
+          }
+        }
+
+        std::sort(pluginNames.begin(), pluginNames.end());
+        pluginNames.erase(std::unique(pluginNames.begin(), pluginNames.end()), pluginNames.end());
+        return pluginNames;
+      }
+
+      String EscapeEngineSettingsXml(const String& value)
+      {
+        String escaped;
+        escaped.reserve(value.size());
+        for (const char ch : value)
+        {
+          switch (ch)
+          {
+          case '&':
+            escaped += "&amp;";
+            break;
+          case '<':
+            escaped += "&lt;";
+            break;
+          case '>':
+            escaped += "&gt;";
+            break;
+          case '"':
+            escaped += "&quot;";
+            break;
+          case '\'':
+            escaped += "&apos;";
+            break;
+          default:
+            escaped.push_back(ch);
+            break;
+          }
+        }
+        return escaped;
+      }
+
+      bool RewriteChildPluginBlock(const String& settingsPath,
+                                   const StringArray& runtimePluginNames)
+      {
+        std::ifstream input(settingsPath, std::ios::in | std::ios::binary);
+        if (!input.is_open())
+        {
+          return false;
+        }
+
+        std::stringstream buffer;
+        buffer << input.rdbuf();
+        String xml = buffer.str();
+        input.close();
+
+        String pluginBlock;
+        pluginBlock += "\t<Plugins>\n";
+        for (const String& pluginName : runtimePluginNames)
+        {
+          pluginBlock += "\t\t<Plugin name=\"";
+          pluginBlock += EscapeEngineSettingsXml(pluginName);
+          pluginBlock += "\"/>\n";
+        }
+        pluginBlock += "\t</Plugins>";
+
+        const String openTag = "<Plugins>";
+        const String closeTag = "</Plugins>";
+        const size_t openPos = xml.find(openTag);
+        if (openPos != String::npos)
+        {
+          const size_t closePos = xml.find(closeTag, openPos);
+          if (closePos == String::npos)
+          {
+            return false;
+          }
+
+          xml.replace(openPos, closePos + closeTag.size() - openPos, pluginBlock);
+        }
+        else
+        {
+          const size_t settingsEnd = xml.rfind("</Settings>");
+          if (settingsEnd == String::npos)
+          {
+            return false;
+          }
+          xml.insert(settingsEnd, pluginBlock + "\n");
+        }
+
+        std::ofstream output(settingsPath, std::ios::out | std::ios::binary | std::ios::trunc);
+        if (!output.is_open())
+        {
+          return false;
+        }
+        output << xml;
+        return true;
+      }
+
+      bool WriteNetworkPlaySceneSnapshot(const String& sceneSnapshotPath,
+                                         String& errorMessage)
+      {
+        EditorScenePtr currentScene = Cast<EditorScene>(GetSceneManager()->GetCurrentScene());
+        if (!currentScene)
+        {
+          errorMessage = "Failed to capture the current editor scene for child boot.";
+          return false;
+        }
+
+        try
+        {
+          std::filesystem::create_directories(
+              std::filesystem::path(sceneSnapshotPath).parent_path());
+        }
+        catch (...)
+        {
+          errorMessage = "Failed to create the child scene snapshot directory.";
+          return false;
+        }
+
+        std::ofstream sceneFile(sceneSnapshotPath, std::ios::out | std::ios::trunc);
+        if (!sceneFile.is_open())
+        {
+          errorMessage = "Failed to open the child scene snapshot for writing.";
+          return false;
+        }
+
+        XmlDocument doc;
+        currentScene->Serialize(&doc, nullptr);
+        std::string xml;
+        rapidxml::print(std::back_inserter(xml), doc, 0);
+        sceneFile << xml;
+        sceneFile.close();
+        return true;
+      }
+
+      bool WriteChildRuntimeEngineSettings(const String& configRoot,
+                                           const StringArray& runtimePluginNames,
+                                           String& errorMessage)
+      {
+        try
+        {
+          std::filesystem::create_directories(configRoot);
+        }
+        catch (...)
+        {
+          errorMessage = "Failed to create the child config directory.";
+          return false;
+        }
+
+        EngineSettings& settings = GetEngineSettings();
+        const StringSet previousPlugins = settings.m_loadedPlugins;
+        settings.m_loadedPlugins.clear();
+        for (const String& pluginName : runtimePluginNames)
+        {
+          settings.m_loadedPlugins.insert(pluginName);
+        }
+
+        const String settingsPath = ConcatPaths({configRoot, "Engine.settings"});
+        settings.Save(settingsPath);
+        settings.m_loadedPlugins = previousPlugins;
+        if (!RewriteChildPluginBlock(settingsPath, runtimePluginNames))
+        {
+          errorMessage = "Failed to author the child runtime plugin settings.";
+          return false;
+        }
+        return true;
+      }
+
       bool WriteNetworkPlayManifest(const String& manifestPath,
                                     const NetworkPlaySessionSpec& session,
                                     const NetworkPlayInstanceSpec& instance,
@@ -113,9 +264,32 @@ namespace ToolKit
 
         const String configRoot =
             ConcatPaths({session.launchRoot, "Config", instance.instanceId});
+        const String tempRoot =
+            ConcatPaths({session.launchRoot, "Temp", instance.instanceId});
+        const String logRoot =
+            ConcatPaths({session.launchRoot, "Logs", instance.instanceId});
         if (!CopyConfigDirectory(session.configTemplateRoot, configRoot))
         {
           errorMessage = "Failed to prepare isolated child config files.";
+          return false;
+        }
+        if (!WriteChildRuntimeEngineSettings(configRoot, session.runtimePluginNames, errorMessage))
+        {
+          return false;
+        }
+        if (!WriteNetworkPlaySceneSnapshot(session.sceneSnapshotPath, errorMessage))
+        {
+          return false;
+        }
+
+        try
+        {
+          std::filesystem::create_directories(tempRoot);
+          std::filesystem::create_directories(logRoot);
+        }
+        catch (...)
+        {
+          errorMessage = "Failed to create the child temp/log directories.";
           return false;
         }
 
@@ -129,68 +303,6 @@ namespace ToolKit
         manifestFile.close();
         return true;
       }
-
-#ifdef _WIN32
-      bool LaunchChildRuntimeProcess(const String& executablePath,
-                                     const String& manifestPath,
-                                     const NetworkPlayInstanceSpec& instance,
-                                     PluginMain::ChildProcessInfo& childProcess,
-                                     String& errorMessage)
-      {
-        std::ostringstream commandLineBuilder;
-        commandLineBuilder << QuoteArgument(executablePath);
-        AddOption(commandLineBuilder, "-networkPlayManifest", manifestPath);
-        AddFlag(commandLineBuilder, GetNetworkPlayRoleFlag(instance.hostingMode));
-        if (instance.headless)
-        {
-          AddFlag(commandLineBuilder, "-headless");
-        }
-        AddOption(commandLineBuilder, "-connectHost", instance.connectHost);
-        AddOption(commandLineBuilder, "-connectPort", instance.connectPort);
-        AddOption(commandLineBuilder, "-listenPort", instance.listenPort);
-        AddOption(commandLineBuilder, "-bindAddress", instance.bindAddress);
-        AddOption(commandLineBuilder, "-advertisedAddress", instance.advertisedAddress);
-
-        const std::wstring executable =
-            PlatformHelpers::UTF8Util::ConvertUTF8ToUTF16(executablePath);
-        const std::wstring commandLine =
-            PlatformHelpers::UTF8Util::ConvertUTF8ToUTF16(commandLineBuilder.str());
-        std::vector<wchar_t> mutableCommandLine(commandLine.begin(),
-                                                commandLine.end());
-        mutableCommandLine.push_back(L'\0');
-
-        STARTUPINFOW startupInfo {};
-        startupInfo.cb = sizeof(startupInfo);
-        startupInfo.dwFlags = STARTF_USESHOWWINDOW;
-        startupInfo.wShowWindow = instance.headless ? SW_HIDE : SW_SHOWNORMAL;
-
-        PROCESS_INFORMATION processInfo {};
-        const std::wstring workingDirectory =
-            std::filesystem::path(executablePath).parent_path().wstring();
-        if (!CreateProcessW(executable.c_str(),
-                            mutableCommandLine.data(),
-                            nullptr,
-                            nullptr,
-                            FALSE,
-                            0,
-                            nullptr,
-                            workingDirectory.c_str(),
-                            &startupInfo,
-                            &processInfo))
-        {
-          errorMessage = "CreateProcessW failed for child runtime.";
-          return false;
-        }
-
-        CloseHandle(processInfo.hThread);
-        childProcess.processHandle =
-            reinterpret_cast<uintptr_t>(processInfo.hProcess);
-        childProcess.processId = processInfo.dwProcessId;
-        childProcess.manifestPath = manifestPath;
-        childProcess.roleName = instance.roleName;
-        return true;
-      }
-#endif
 
       bool CollectSceneNetworkManagers(NetworkManagerPtrArray& managers)
       {
@@ -262,6 +374,7 @@ namespace ToolKit
 		void PluginMain::Init(Main* master)
     {
 			Main::SetProxy(master);
+      TK_LOG("Network plugin Init");
 		}
 
 		void PluginMain::Destroy()
@@ -277,10 +390,14 @@ namespace ToolKit
         m_abortEditorPlayRequested = false;
         if (m_networkManager)
         {
-          m_networkManager->Stop();
+          StopLocalConfiguredSession();
+          RestoreNetworkManagerOverrides();
           m_networkManager = nullptr;
         }
-        RestoreNetworkManagerOverrides();
+        else
+        {
+          RestoreNetworkManagerOverrides();
+        }
         TerminateTrackedChildProcesses(true);
         if (!m_abortEditorPlayReason.empty())
         {
@@ -300,6 +417,7 @@ namespace ToolKit
 		void PluginMain::OnLoad(XmlDocumentPtr state)
     {
       (void) state;
+      TK_LOG("Network plugin OnLoad");
 			ToolKitNetworking::NetworkComponent::StaticClass()->MetaKeys[ToolKit::Editor::ComponentMenuMetaKey] = "ToolKitNetworking/NetworkComponent:NetworkComponent";
 			ToolKitNetworking::NetworkManager::StaticClass()->MetaKeys[ToolKit::Editor::ComponentMenuMetaKey] = "ToolKitNetworking/NetworkManager:NetworkManager";
 
@@ -311,32 +429,30 @@ namespace ToolKit
     {
       (void) state;
       TerminateTrackedChildProcesses(true);
-      RestoreNetworkManagerOverrides();
-			if (m_networkManager)
+      if (m_networkManager)
 			{
-				m_networkManager->Stop();
+				StopLocalConfiguredSession();
+        RestoreNetworkManagerOverrides();
 				m_networkManager = nullptr;
 			}
+      else
+      {
+        RestoreNetworkManagerOverrides();
+      }
 			GetObjectFactory()->Unregister<ToolKitNetworking::NetworkComponent>();
 			GetObjectFactory()->Unregister<ToolKitNetworking::NetworkManager>();
 		}
 
 		void PluginMain::OnPlay()
     {
+      TK_LOG("Network plugin OnPlay");
       m_abortEditorPlayRequested = false;
       m_abortEditorPlayReason.clear();
       m_keepChildrenAliveAfterStop = false;
 
-      const NetworkPlaySettings& settings = GetApp()->m_networkPlaySettings;
-      NetworkPlayPlannerSettings plannerSettings;
-      plannerSettings.playerCount = static_cast<uint>(settings.PlayerCount);
-      plannerSettings.runDedicatedServerHeadless =
-          settings.RunDedicatedServerHeadless;
-      plannerSettings.basePort = settings.BasePort;
-      plannerSettings.autoAllocatePorts = settings.AutoAllocatePorts;
-      plannerSettings.topology = settings.Topology;
-      if (settings.Enabled)
+      if (IsEditorNetworkPlayEnabled())
       {
+        TK_LOG("Network plugin starting editor network play session");
         if (!StartNetworkPlaySession())
         {
           return;
@@ -344,6 +460,7 @@ namespace ToolKit
         return;
       }
 
+      TK_LOG("Network plugin starting single-process network session");
       StartSingleProcessSession();
 		}
 
@@ -362,48 +479,37 @@ namespace ToolKit
 			TK_LOG("Network plugin onStop");
 			if (m_networkManager)
 			{
-				m_networkManager->Stop();
+				StopLocalConfiguredSession();
+        RestoreNetworkManagerOverrides();
 				m_networkManager = nullptr;
 			}
-
-      RestoreNetworkManagerOverrides();
+      else
+      {
+        RestoreNetworkManagerOverrides();
+      }
       TerminateTrackedChildProcesses(!m_keepChildrenAliveAfterStop);
       m_keepChildrenAliveAfterStop = false;
 		}
 
     void PluginMain::PollChildProcesses()
     {
-#ifdef _WIN32
       for (auto it = m_childProcesses.begin(); it != m_childProcesses.end();)
       {
-        HANDLE processHandle = reinterpret_cast<HANDLE>(it->processHandle);
-        if (processHandle == nullptr)
+        if (it->process.processHandle == 0)
         {
           it = m_childProcesses.erase(it);
           continue;
         }
 
-        DWORD exitCode = 0;
-        if (!GetExitCodeProcess(processHandle, &exitCode) ||
-            exitCode != STILL_ACTIVE)
+        if (!IsChildProcessActive(*it))
         {
-          CloseHandle(processHandle);
+          ReleaseChildProcess(*it, false);
           it = m_childProcesses.erase(it);
           continue;
         }
 
         ++it;
       }
-#else
-      m_childProcesses.clear();
-#endif
-    }
-
-    void PluginMain::RequestAbortPlay(const String& reason)
-    {
-      TK_ERR("%s", reason.c_str());
-      m_abortEditorPlayRequested = true;
-      m_abortEditorPlayReason = reason;
     }
 
     void PluginMain::RestoreNetworkManagerOverrides()
@@ -426,29 +532,222 @@ namespace ToolKit
 
     void PluginMain::TerminateTrackedChildProcesses(bool force)
     {
-#ifdef _WIN32
       for (ChildProcessInfo& child : m_childProcesses)
       {
-        HANDLE processHandle = reinterpret_cast<HANDLE>(child.processHandle);
-        if (processHandle == nullptr)
-        {
-          continue;
-        }
-
-        if (force)
-        {
-          DWORD exitCode = 0;
-          if (GetExitCodeProcess(processHandle, &exitCode) && exitCode == STILL_ACTIVE)
-          {
-            TerminateProcess(processHandle, 1);
-            WaitForSingleObject(processHandle, 2000);
-          }
-        }
-
-        CloseHandle(processHandle);
+        ReleaseChildProcess(child, force);
       }
-#endif
       m_childProcesses.clear();
+    }
+
+    bool PluginMain::IsEditorNetworkPlayEnabled() const
+    {
+      return GetApp() != nullptr && GetApp()->m_networkPlaySettings.Enabled;
+    }
+
+    bool PluginMain::ResolveNetworkPlayStartContext(
+        NetworkPlayStartContext& context,
+        String& errorMessage)
+    {
+#ifndef _WIN32
+      errorMessage =
+          "Editor network play currently supports Windows child launches only.";
+      return false;
+#else
+      NetworkManagerPtrArray managers;
+      if (!CollectSceneNetworkManagers(managers))
+      {
+        errorMessage = "No active scene is available for editor network play.";
+        return false;
+      }
+      if (managers.size() != 1)
+      {
+        errorMessage =
+            "Editor network play requires exactly one active NetworkManager in the scene.";
+        return false;
+      }
+
+      context.networkManager = managers.front();
+      if (!context.networkManager)
+      {
+        errorMessage =
+            "Editor network play could not acquire the scene NetworkManager.";
+        return false;
+      }
+
+      const SessionBootstrapConfig sessionConfig =
+          context.networkManager->GetSessionBootstrapConfig();
+      if (sessionConfig.joinMethod != JoinMethod::DirectAddress)
+      {
+        errorMessage =
+            "Editor network play currently supports DirectAddress only.";
+        return false;
+      }
+
+      if (GetApp() == nullptr)
+      {
+        errorMessage = "Editor network play requires an active editor app.";
+        return false;
+      }
+
+      const Project activeProject = GetApp()->m_workspace.GetActiveProject();
+      if (activeProject.name.empty())
+      {
+        errorMessage = "Editor network play requires an active project.";
+        return false;
+      }
+
+      EditorScenePtr currentScene =
+          Cast<EditorScene>(GetSceneManager()->GetCurrentScene());
+      if (!currentScene)
+      {
+        errorMessage = "Editor network play requires an active scene.";
+        return false;
+      }
+
+      const String scenePath = currentScene->GetFile();
+      if (scenePath.empty() || !CheckFile(scenePath))
+      {
+        errorMessage =
+            "Editor network play requires the current scene to be saved to disk.";
+        return false;
+      }
+
+      const String workspaceRoot = GetApp()->m_workspace.GetActiveWorkspace();
+      const String projectRoot =
+          ConcatPaths({workspaceRoot, activeProject.name});
+      const String executablePath =
+          GetEditorRuntimeExecutablePath(GetApp()->m_workspace);
+      if (!CheckFile(executablePath))
+      {
+        errorMessage =
+            "Editor network play could not find the standalone runtime executable.";
+        return false;
+      }
+
+      const NetworkPlaySettings& settings = GetApp()->m_networkPlaySettings;
+      context.autoStopChildren = settings.AutoStopChildren;
+      context.plannerSettings.playerCount =
+          static_cast<uint>(settings.PlayerCount);
+      context.plannerSettings.runDedicatedServerHeadless =
+          settings.RunDedicatedServerHeadless;
+      context.plannerSettings.basePort = settings.BasePort;
+      context.plannerSettings.autoAllocatePorts = settings.AutoAllocatePorts;
+      context.plannerSettings.topology = settings.Topology;
+
+      context.sceneConfig.joinMethod = sessionConfig.joinMethod;
+      context.sceneConfig.maxClients =
+          context.networkManager->GetMaxClientsVal();
+      context.sceneConfig.connectHost =
+          context.networkManager->GetConnectHostVal();
+      context.sceneConfig.connectPort = static_cast<uint16_t>(
+          context.networkManager->GetConnectPortVal());
+      context.sceneConfig.listenPort = static_cast<uint16_t>(
+          context.networkManager->GetListenPortVal());
+      context.sceneConfig.bindAddress =
+          context.networkManager->GetBindAddressVal();
+      context.sceneConfig.advertisedAddress =
+          context.networkManager->GetAdvertisedAddressVal();
+
+      context.metadata.launchId = BuildNetworkPlayLaunchId();
+      context.metadata.launchRoot = ConcatPaths(
+          {projectRoot, "Intermediate", "NetworkPlay", context.metadata.launchId});
+      context.metadata.projectRoot = projectRoot;
+      context.metadata.workspaceRoot = workspaceRoot;
+      context.metadata.configTemplateRoot =
+          GetApp()->m_workspace.GetConfigDirectory();
+      context.metadata.resourceRoot = GetApp()->m_workspace.GetResourceRoot();
+      context.metadata.scenePath = scenePath;
+      context.metadata.executablePath = executablePath;
+      context.metadata.runtimePluginNames = CollectRuntimePluginNames();
+      return true;
+#endif
+    }
+
+    bool PluginMain::WriteChildManifestFile(const String& manifestPath,
+                                            const NetworkPlaySessionSpec& session,
+                                            const NetworkPlayInstanceSpec& instance,
+                                            String& errorMessage)
+    {
+      return WriteNetworkPlayManifest(manifestPath, session, instance, errorMessage);
+    }
+
+    bool PluginMain::LaunchChildProcess(const String& executablePath,
+                                        const String& manifestPath,
+                                        const NetworkPlayInstanceSpec& instance,
+                                        ChildProcessInfo& childProcess,
+                                        String& errorMessage)
+    {
+      EditorRuntimeLaunchRequest request;
+      request.executablePath = executablePath;
+      request.manifestPath = manifestPath;
+      request.roleFlag = GetNetworkPlayRoleFlag(instance.hostingMode);
+      request.connectHost = instance.connectHost;
+      request.connectPort = instance.connectPort;
+      request.listenPort = instance.listenPort;
+      request.bindAddress = instance.bindAddress;
+      request.advertisedAddress = instance.advertisedAddress;
+      request.headless = instance.headless;
+
+      TK_LOG(("Network plugin launching child executable=" + executablePath +
+              " manifest=" + manifestPath + " role=" + instance.roleName)
+                 .c_str());
+      if (!LaunchEditorRuntimeProcess(request, childProcess.process, errorMessage))
+      {
+        return false;
+      }
+
+      childProcess.manifestPath = manifestPath;
+      childProcess.roleName = instance.roleName;
+      return true;
+    }
+
+    bool PluginMain::IsChildProcessActive(const ChildProcessInfo& child) const
+    {
+      return IsEditorRuntimeProcessActive(child.process);
+    }
+
+    void PluginMain::ReleaseChildProcess(ChildProcessInfo& child, bool forceTerminate)
+    {
+      ReleaseEditorRuntimeProcess(child.process, forceTerminate);
+    }
+
+    void PluginMain::SleepForChildStartup(uint milliseconds)
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
+    }
+
+    bool PluginMain::StartLocalConfiguredSession()
+    {
+      if (m_networkManager == nullptr)
+      {
+        TK_LOG("Network plugin cannot start local session: NetworkManager is null.");
+        return false;
+      }
+
+      TK_LOG("Network plugin starting local NetworkManager configured session.");
+      const bool started = m_networkManager->StartConfiguredSession();
+      const auto status = m_networkManager->GetConnectionStatus();
+      TK_LOG(("Network plugin local NetworkManager start result=" +
+              std::to_string(started ? 1 : 0) + " state=" +
+              std::to_string(static_cast<int>(status.state)) + " detail=" +
+              status.detailMessage)
+                 .c_str());
+      return started;
+    }
+
+    void PluginMain::StopLocalConfiguredSession()
+    {
+      if (m_networkManager != nullptr)
+      {
+        m_networkManager->Stop();
+      }
+    }
+
+    void PluginMain::RequestAbortPlay(const String& reason)
+    {
+      TK_ERR("%s", reason.c_str());
+      m_abortEditorPlayRequested = true;
+      m_abortEditorPlayReason = reason;
     }
 
     bool PluginMain::StartSingleProcessSession()
@@ -465,114 +764,43 @@ namespace ToolKit
 
     bool PluginMain::StartNetworkPlaySession()
     {
+      TK_LOG("Network plugin StartNetworkPlaySession entered.");
       TerminateTrackedChildProcesses(true);
       RestoreNetworkManagerOverrides();
-
-#ifndef _WIN32
-      RequestAbortPlay("Editor network play currently supports Windows child launches only.");
-      return false;
-#else
-      NetworkManagerPtrArray managers;
-      if (!CollectSceneNetworkManagers(managers))
+      NetworkPlayStartContext context;
+      String contextError;
+      if (!ResolveNetworkPlayStartContext(context, contextError))
       {
-        RequestAbortPlay("No active scene is available for editor network play.");
-        return false;
-      }
-      if (managers.size() != 1)
-      {
-        RequestAbortPlay("Editor network play requires exactly one active NetworkManager in the scene.");
+        TK_LOG(("Network plugin failed to resolve network play context: " +
+                contextError)
+                   .c_str());
+        RequestAbortPlay(contextError.empty()
+                             ? "Failed to resolve the editor network play context."
+                             : contextError);
         return false;
       }
 
-      m_networkManager = managers.front();
-      if (!m_networkManager)
-      {
-        RequestAbortPlay("Editor network play could not acquire the scene NetworkManager.");
-        return false;
-      }
-
-      const SessionBootstrapConfig sessionConfig =
-          m_networkManager->GetSessionBootstrapConfig();
-      if (sessionConfig.joinMethod != JoinMethod::DirectAddress)
-      {
-        RequestAbortPlay("Editor network play currently supports DirectAddress only.");
-        return false;
-      }
-
-      const Project activeProject = GetApp()->m_workspace.GetActiveProject();
-      if (activeProject.name.empty())
-      {
-        RequestAbortPlay("Editor network play requires an active project.");
-        return false;
-      }
-
-      EditorScenePtr currentScene = Cast<EditorScene>(GetSceneManager()->GetCurrentScene());
-      if (!currentScene)
-      {
-        RequestAbortPlay("Editor network play requires an active scene.");
-        return false;
-      }
-
-      const String scenePath = currentScene->GetFile();
-      if (scenePath.empty() || !CheckFile(scenePath))
-      {
-        RequestAbortPlay("Editor network play requires the current scene to be saved to disk.");
-        return false;
-      }
-
-      const String workspaceRoot = GetApp()->m_workspace.GetActiveWorkspace();
-      const String projectRoot =
-          ConcatPaths({workspaceRoot, activeProject.name});
-      const String executablePath =
-          GetApp()->m_workspace.GetBinPath() + ".exe";
-      if (!CheckFile(executablePath))
-      {
-        RequestAbortPlay("Editor network play could not find the standalone runtime executable.");
-        return false;
-      }
-
-      const NetworkPlaySettings& settings = GetApp()->m_networkPlaySettings;
-      NetworkPlayPlannerSettings plannerSettings;
-      plannerSettings.playerCount = static_cast<uint>(settings.PlayerCount);
-      plannerSettings.runDedicatedServerHeadless =
-          settings.RunDedicatedServerHeadless;
-      plannerSettings.basePort = settings.BasePort;
-      plannerSettings.autoAllocatePorts = settings.AutoAllocatePorts;
-      plannerSettings.topology = settings.Topology;
+      m_networkManager = context.networkManager;
       NetworkPlaySessionSpec session;
-      NetworkPlaySceneConfig sceneConfig;
-      sceneConfig.joinMethod = sessionConfig.joinMethod;
-      sceneConfig.maxClients = m_networkManager->GetMaxClientsVal();
-      sceneConfig.connectHost = m_networkManager->GetConnectHostVal();
-      sceneConfig.connectPort = static_cast<uint16_t>(m_networkManager->GetConnectPortVal());
-      sceneConfig.listenPort = static_cast<uint16_t>(m_networkManager->GetListenPortVal());
-      sceneConfig.bindAddress = m_networkManager->GetBindAddressVal();
-      sceneConfig.advertisedAddress = m_networkManager->GetAdvertisedAddressVal();
-
-      NetworkPlaySessionMetadata metadata;
-      metadata.launchId = BuildNetworkPlayLaunchId();
-      metadata.launchRoot =
-          ConcatPaths({projectRoot, "Intermediate", "NetworkPlay", metadata.launchId});
-      metadata.projectRoot = projectRoot;
-      metadata.workspaceRoot = workspaceRoot;
-      metadata.configTemplateRoot = GetApp()->m_workspace.GetConfigDirectory();
-      metadata.resourceRoot = GetApp()->m_workspace.GetResourceRoot();
-      metadata.scenePath = scenePath;
-      metadata.executablePath = executablePath;
-
       String planningError;
-      if (!BuildNetworkPlaySessionSpec(plannerSettings, sceneConfig, metadata, session,
+      if (!BuildNetworkPlaySessionSpec(context.plannerSettings,
+                                       context.sceneConfig,
+                                       context.metadata,
+                                       session,
                                        planningError))
       {
+        TK_LOG(("Network plugin failed to build network play session: " +
+                planningError)
+                   .c_str());
         RequestAbortPlay(planningError.empty()
                              ? "Failed to build the editor network play session."
                              : planningError);
         return false;
       }
 
-      m_keepChildrenAliveAfterStop = !settings.AutoStopChildren;
+      m_keepChildrenAliveAfterStop = !context.autoStopChildren;
 
-      if (settings.Topology == NetworkPlayTopology::DedicatedServer &&
+      if (context.plannerSettings.topology == NetworkPlayTopology::DedicatedServer &&
           !session.childInstances.empty())
       {
         String errorMessage;
@@ -581,13 +809,16 @@ namespace ToolKit
             {session.launchRoot, "instances", serverChild.instanceId + ".settings"});
 
         ChildProcessInfo childProcess;
-        if (!WriteNetworkPlayManifest(manifestPath, session, serverChild, errorMessage) ||
-            !LaunchChildRuntimeProcess(executablePath,
-                                       manifestPath,
-                                       serverChild,
-                                       childProcess,
-                                       errorMessage))
+        if (!WriteChildManifestFile(manifestPath, session, serverChild, errorMessage) ||
+            !LaunchChildProcess(context.metadata.executablePath,
+                                manifestPath,
+                                serverChild,
+                                childProcess,
+                                errorMessage))
         {
+          TK_LOG(("Network plugin failed to launch dedicated server child: " +
+                  errorMessage)
+                     .c_str());
           RequestAbortPlay(errorMessage.empty()
                                ? "Failed to start the dedicated server child process."
                                : errorMessage);
@@ -597,11 +828,17 @@ namespace ToolKit
         }
 
         m_childProcesses.push_back(childProcess);
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        SleepForChildStartup(250);
       }
 
       ConfigureLocalNetworkManager(*m_networkManager, m_overrideState, session.localInstance);
-      if (!m_networkManager->StartConfiguredSession())
+      TK_LOG(("Network plugin configured local NetworkManager role=" +
+              session.localInstance.roleName + " connect=" +
+              session.localInstance.connectHost + ":" +
+              std::to_string(session.localInstance.connectPort) + " listen=" +
+              std::to_string(session.localInstance.listenPort))
+                 .c_str());
+      if (!StartLocalConfiguredSession())
       {
         TerminateTrackedChildProcesses(true);
         RestoreNetworkManagerOverrides();
@@ -610,13 +847,13 @@ namespace ToolKit
         return false;
       }
 
-      if (settings.Topology == NetworkPlayTopology::ListenServer)
+      if (context.plannerSettings.topology == NetworkPlayTopology::ListenServer)
       {
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        SleepForChildStartup(250);
       }
 
       const size_t childStartIndex =
-          settings.Topology == NetworkPlayTopology::DedicatedServer ? 1u : 0u;
+          context.plannerSettings.topology == NetworkPlayTopology::DedicatedServer ? 1u : 0u;
       for (size_t childIndex = childStartIndex; childIndex < session.childInstances.size();
            ++childIndex)
       {
@@ -625,14 +862,17 @@ namespace ToolKit
             {session.launchRoot, "instances", childSpec.instanceId + ".settings"});
         String errorMessage;
         ChildProcessInfo childProcess;
-        if (!WriteNetworkPlayManifest(manifestPath, session, childSpec, errorMessage) ||
-            !LaunchChildRuntimeProcess(executablePath,
-                                       manifestPath,
-                                       childSpec,
-                                       childProcess,
-                                       errorMessage))
+        if (!WriteChildManifestFile(manifestPath, session, childSpec, errorMessage) ||
+            !LaunchChildProcess(context.metadata.executablePath,
+                                manifestPath,
+                                childSpec,
+                                childProcess,
+                                errorMessage))
         {
-          m_networkManager->Stop();
+          TK_LOG(("Network plugin failed to launch child " +
+                  childSpec.instanceId + ": " + errorMessage)
+                     .c_str());
+          StopLocalConfiguredSession();
           TerminateTrackedChildProcesses(true);
           RestoreNetworkManagerOverrides();
           RequestAbortPlay(errorMessage.empty()
@@ -643,11 +883,13 @@ namespace ToolKit
         }
 
         m_childProcesses.push_back(childProcess);
+        TK_LOG(("Network plugin launched child " + childSpec.instanceId +
+                " role=" + childSpec.roleName)
+                   .c_str());
       }
 
       TK_LOG("Editor network play launched.");
       return true;
-#endif
     }
 
 	} // namespace Editor

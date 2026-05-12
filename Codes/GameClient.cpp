@@ -35,6 +35,7 @@ bool ToolKit::ToolKitNetworking::GameClient::UpdateClient() {
   while (enet_host_service(m_netHandle, &event, 0) > 0) {
     if (event.type == ENET_EVENT_TYPE_CONNECT) {
       m_isConnected = true;
+      TK_LOG("Client transport connected to server.");
 
       for (const auto &callback : m_onClientConnectedToServer) {
         callback();
@@ -42,11 +43,15 @@ bool ToolKit::ToolKitNetworking::GameClient::UpdateClient() {
 
       SendClientInitPacket();
     } else if (event.type == ENET_EVENT_TYPE_DISCONNECT) {
+      TK_LOG("Client transport disconnected from server.");
       m_isConnected = false;
       m_netPeer = nullptr;
       m_PeerId = -1;
     } else if (event.type == ENET_EVENT_TYPE_RECEIVE) {
       GamePacket *packet = (GamePacket *)event.packet->data;
+      TK_LOG(("Client transport received packet type=" +
+              std::to_string(packet->type))
+                 .c_str());
 
       if (packet->type == NetworkMessage::ClientInit) {
         ClientInitPacket *initPacket = (ClientInitPacket *)packet;

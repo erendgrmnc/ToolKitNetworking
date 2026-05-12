@@ -60,6 +60,7 @@ private:
   void HandleHandshakeResponse(HandshakeResponsePacket *packet, int source);
   void HandleHandshakeAccept(HandshakeAcceptPacket *packet);
   void HandleHandshakeReject(HandshakeRejectPacket *packet);
+  void HandleSpawnPacket(const SpawnPacket &packet);
   void BroadcastSnapshot();
   void SendSnapshotToPeer(int peerID, int baseTick);
   void UpdateAsServer(float deltaTime);
@@ -78,6 +79,7 @@ private:
   bool m_handshakeStarted = false;
   bool m_localSessionAuthenticated = false;
   bool m_localAuthFailed = false;
+  std::vector<SpawnPacket> m_pendingPreAuthSpawns;
   uint64_t m_localClientNonce = 0;
   uint64_t m_localServerNonce = 0;
   std::function<uint64_t()> m_clockNowProvider;

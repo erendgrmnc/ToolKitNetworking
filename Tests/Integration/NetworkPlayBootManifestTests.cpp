@@ -21,8 +21,11 @@ TEST(NetworkPlayBootManifestTests, ParseXmlReadsExplicitFields) {
       "<NetworkPlayInstance configRoot=\"C:/Temp/Config\" "
       "resourceRoot=\"C:/Temp/Resources\" "
       "projectRoot=\"C:/Project\" "
+      "workspaceRoot=\"C:/Workspace\" "
       "scenePath=\"C:/Project/Resources/Scenes/Test.scene\" "
-      "headless=\"true\" autoPlay=\"1\" />";
+      "sceneSnapshotPath=\"C:/Project/Intermediate/NetworkPlay/Scene.scene\" "
+      "tempRoot=\"C:/Temp/Work\" logRoot=\"C:/Temp/Logs\" "
+      "headless=\"true\" autoPlay=\"1\"><RuntimePlugins><Plugin name=\"RuntimeGameplay\" /></RuntimePlugins></NetworkPlayInstance>";
 
   NetworkPlayBootManifest manifest;
   ASSERT_TRUE(ParseNetworkPlayManifestXml(xml, manifest));
@@ -32,7 +35,13 @@ TEST(NetworkPlayBootManifestTests, ParseXmlReadsExplicitFields) {
   EXPECT_EQ(manifest.ConfigRoot, "C:/Temp/Config");
   EXPECT_EQ(manifest.ResourceRoot, "C:/Temp/Resources");
   EXPECT_EQ(manifest.ProjectRoot, "C:/Project");
+  EXPECT_EQ(manifest.WorkspaceRoot, "C:/Workspace");
   EXPECT_EQ(manifest.ScenePath, "C:/Project/Resources/Scenes/Test.scene");
+  EXPECT_EQ(manifest.SceneSnapshotPath, "C:/Project/Intermediate/NetworkPlay/Scene.scene");
+  EXPECT_EQ(manifest.TempRoot, "C:/Temp/Work");
+  EXPECT_EQ(manifest.LogRoot, "C:/Temp/Logs");
+  ASSERT_EQ(manifest.RuntimePlugins.size(), 1u);
+  EXPECT_EQ(manifest.RuntimePlugins.front(), "RuntimeGameplay");
 }
 
 TEST(NetworkPlayBootManifestTests, ParseXmlDerivesRootsFromProjectRoot) {

@@ -11,6 +11,8 @@
 #include <ToolKit.h>
 #include <enet/enet.h>
 
+#include "Editor/EditorRuntimeLauncher.h"
+#include "EditorNetworkPlayPlanner.h"
 #include "NetworkManager.h"
 
 #include <vector>
@@ -20,7 +22,7 @@ namespace ToolKit
   namespace Editor
   {
 
-    class PluginMain : public Plugin
+    class TK_NET_EDITOR_API PluginMain : public Plugin
     {
      public:
       PluginType GetType() override { return PluginType::Editor; }
@@ -50,19 +52,46 @@ namespace ToolKit
 
       struct ChildProcessInfo
       {
-        uintptr_t processHandle = 0;
-        unsigned long processId = 0;
+        EditorChildProcess process;
         String manifestPath;
         String roleName;
       };
 
+      struct NetworkPlayStartContext
+      {
+        ToolKitNetworking::NetworkManagerPtr networkManager;
+        NetworkPlayPlannerSettings plannerSettings;
+        NetworkPlaySceneConfig sceneConfig;
+        NetworkPlaySessionMetadata metadata;
+        bool autoStopChildren = true;
+      };
+
      private:
       void PollChildProcesses();
-      void RequestAbortPlay(const String& reason);
       void RestoreNetworkManagerOverrides();
       void TerminateTrackedChildProcesses(bool force);
       bool StartNetworkPlaySession();
       bool StartSingleProcessSession();
+
+     protected:
+      virtual bool IsEditorNetworkPlayEnabled() const;
+      virtual bool ResolveNetworkPlayStartContext(NetworkPlayStartContext& context,
+                                                  String& errorMessage);
+      virtual bool WriteChildManifestFile(const String& manifestPath,
+                                          const NetworkPlaySessionSpec& session,
+                                          const NetworkPlayInstanceSpec& instance,
+                                          String& errorMessage);
+      virtual bool LaunchChildProcess(const String& executablePath,
+                                      const String& manifestPath,
+                                      const NetworkPlayInstanceSpec& instance,
+                                      ChildProcessInfo& childProcess,
+                                      String& errorMessage);
+      virtual bool IsChildProcessActive(const ChildProcessInfo& child) const;
+      virtual void ReleaseChildProcess(ChildProcessInfo& child, bool forceTerminate);
+      virtual void SleepForChildStartup(uint milliseconds);
+      virtual bool StartLocalConfiguredSession();
+      virtual void StopLocalConfiguredSession();
+      virtual void RequestAbortPlay(const String& reason);
 
      protected:
       ToolKitNetworking::NetworkManagerPtr m_networkManager;

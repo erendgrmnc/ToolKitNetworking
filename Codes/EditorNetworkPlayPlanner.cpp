@@ -134,7 +134,10 @@ bool BuildNetworkPlaySessionSpec(const NetworkPlayPlannerSettings &settings,
   session.configTemplateRoot = metadata.configTemplateRoot;
   session.resourceRoot = metadata.resourceRoot;
   session.scenePath = metadata.scenePath;
+  session.sceneSnapshotPath =
+      ConcatPaths({metadata.launchRoot, "Scenes", "Current.scene"});
   session.executablePath = metadata.executablePath;
+  session.runtimePluginNames = metadata.runtimePluginNames;
   session.topology = settings.topology;
   session.basePort = ResolveNetworkPlayBasePort(settings);
   session.playerCount = settings.playerCount > 1
@@ -247,6 +250,10 @@ bool BuildNetworkPlaySessionSpec(const NetworkPlayPlannerSettings &settings,
 String BuildNetworkPlayManifestXml(const NetworkPlaySessionSpec &session,
                                    const NetworkPlayInstanceSpec &instance,
                                    const String &configRoot) {
+  const String tempRoot =
+      ConcatPaths({session.launchRoot, "Temp", instance.instanceId});
+  const String logRoot =
+      ConcatPaths({session.launchRoot, "Logs", instance.instanceId});
   String xml;
   xml += "<NetworkPlayInstance";
   xml += " launchId=\"" + EscapeXml(session.launchId) + "\"";
@@ -256,8 +263,11 @@ String BuildNetworkPlayManifestXml(const NetworkPlaySessionSpec &session,
   xml += " projectRoot=\"" + EscapeXml(session.projectRoot) + "\"";
   xml += " workspaceRoot=\"" + EscapeXml(session.workspaceRoot) + "\"";
   xml += " scenePath=\"" + EscapeXml(session.scenePath) + "\"";
+  xml += " sceneSnapshotPath=\"" + EscapeXml(session.sceneSnapshotPath) + "\"";
   xml += " configRoot=\"" + EscapeXml(configRoot) + "\"";
   xml += " resourceRoot=\"" + EscapeXml(session.resourceRoot) + "\"";
+  xml += " tempRoot=\"" + EscapeXml(tempRoot) + "\"";
+  xml += " logRoot=\"" + EscapeXml(logRoot) + "\"";
   xml += " autoPlay=\"1\"";
   xml += " headless=\"" + BoolToString(instance.headless) + "\"";
   xml += " joinMethod=\"DirectAddress\"";
@@ -267,7 +277,13 @@ String BuildNetworkPlayManifestXml(const NetworkPlaySessionSpec &session,
   xml += " bindAddress=\"" + EscapeXml(instance.bindAddress) + "\"";
   xml += " advertisedAddress=\"" + EscapeXml(instance.advertisedAddress) + "\"";
   xml += " maxClients=\"" + std::to_string(instance.maxClients) + "\"";
-  xml += " />";
+  xml += ">";
+  xml += "<RuntimePlugins>";
+  for (const String& pluginName : session.runtimePluginNames) {
+    xml += "<Plugin name=\"" + EscapeXml(pluginName) + "\" />";
+  }
+  xml += "</RuntimePlugins>";
+  xml += "</NetworkPlayInstance>";
   return xml;
 }
 

@@ -97,7 +97,10 @@ set_tests_properties(integration.ToolKitNetworking_integration_tests PROPERTIES
 if(TK_NET_BUILD_ENGINE_TESTS)
     add_executable(ToolKitNetworking_engine_tests
         Integration/EditorNetworkPlayPlannerTests.cpp
+        Integration/EditorNetworkPlayPluginTests.cpp
+        Integration/NetworkPlayChildProcessSmokeTests.cpp
         Integration/NetworkPlayBootManifestTests.cpp
+        Integration/NetworkPlayBootRuntimeTests.cpp
         Integration/ReplicationManagerSecurityTests.cpp
     )
     target_include_directories(ToolKitNetworking_engine_tests PRIVATE
@@ -107,12 +110,17 @@ if(TK_NET_BUILD_ENGINE_TESTS)
         "${TK_NET_CODES_DIR}/enet/include"
     )
     target_compile_features(ToolKitNetworking_engine_tests PRIVATE cxx_std_17)
+    target_compile_definitions(ToolKitNetworking_engine_tests PRIVATE
+        TK_NET_PROJECT_ROOT_DIR="${TK_NET_PROJECT_ROOT_DIR}"
+        TK_NET_TESTS_OUTPUT_DIR="${TK_NET_TESTS_OUTPUT_DIR}"
+    )
     target_link_directories(ToolKitNetworking_engine_tests PRIVATE
         "${TOOLKIT_DIR}/Bin"
         "${TK_DEPENDECY_OUT_DIR}"
     )
     target_link_libraries(ToolKitNetworking_engine_tests PRIVATE
         ToolKitNetworking
+        ToolKitNetworkingRuntime
         ${toolkit}
         ${imgui}
         ${editor}

@@ -69,9 +69,7 @@ include_directories(
 ###############################
 # Project Source Files Begin. #
 ###############################
-set(SOURCE 
-    EditorNetworkPlayPlanner.cpp
-    PluginMain.cpp
+set(RUNTIME_SOURCE
     NetworkBase.cpp
     NetworkState.cpp
     NetworkPackets.cpp
@@ -82,7 +80,11 @@ set(SOURCE
     NetworkManager.cpp
     NetworkSpawnService.cpp)
 
-set(HEADERS 
+set(EDITOR_SOURCE
+    EditorNetworkPlayPlanner.cpp
+    PluginMain.cpp)
+
+set(HEADERS
     EditorNetworkPlayPlanner.h
     NetworkRole.h
     NetworkSessionCore.h
@@ -161,29 +163,91 @@ target_include_directories(ToolKitNetworkingSessionCore PUBLIC
 target_compile_features(ToolKitNetworkingSessionCore PUBLIC cxx_std_17)
 target_link_libraries(ToolKitNetworkingSessionCore PUBLIC ToolKitNetworkingCore)
 
-# Plugin build for editor.
-set(CMAKE_DEBUG_POSTFIX d) # Only editor needs to know the postfix for loading correct version of the plugin.
-add_library(${PLUGIN_PROJECT_NAME} SHARED ${SOURCE} ${HEADERS}) # Plugin must be a dll.
+set(CMAKE_DEBUG_POSTFIX d)
 
-target_link_directories(${PLUGIN_PROJECT_NAME} PRIVATE "${TOOLKIT_DIR}/Bin")
-target_link_directories(${PLUGIN_PROJECT_NAME} PRIVATE "${TK_DEPENDECY_OUT_DIR}")
-target_link_libraries(${PLUGIN_PROJECT_NAME} PRIVATE ToolKitNetworkingCore ToolKitNetworkingSessionCore ${toolkit} ${imgui} ${editor})
-target_link_libraries(${PLUGIN_PROJECT_NAME} PRIVATE enet Ws2_32 Winmm)
-target_include_directories(${PLUGIN_PROJECT_NAME} PRIVATE ${enet_SOURCE_DIR}/include)
-target_compile_definitions(${PLUGIN_PROJECT_NAME} PRIVATE TK_WITH_EDITOR TK_DLL_IMPORT TK_NET_EXPORT)
+add_library(ToolKitNetworkingRuntime SHARED ${RUNTIME_SOURCE} ${HEADERS})
+target_link_directories(ToolKitNetworkingRuntime PRIVATE "${TOOLKIT_DIR}/Bin")
+target_link_directories(ToolKitNetworkingRuntime PRIVATE "${TK_DEPENDECY_OUT_DIR}")
+target_link_libraries(ToolKitNetworkingRuntime PRIVATE
+    ToolKitNetworkingCore
+    ToolKitNetworkingSessionCore
+    ${toolkit}
+    enet
+    Ws2_32
+    Winmm
+)
+target_include_directories(ToolKitNetworkingRuntime PRIVATE ${enet_SOURCE_DIR}/include)
+target_compile_definitions(ToolKitNetworkingRuntime PRIVATE TK_DLL_IMPORT TK_NET_EXPORT)
 
-# Set precompiled header files for the project.
+add_library(ToolKitNetworkingRuntimeStatic STATIC ${RUNTIME_SOURCE} ${HEADERS})
+target_link_libraries(ToolKitNetworkingRuntimeStatic PUBLIC
+    ToolKitNetworkingCore
+    ToolKitNetworkingSessionCore
+    enet
+    Ws2_32
+    Winmm
+)
+target_include_directories(ToolKitNetworkingRuntimeStatic PUBLIC
+    "${TOOLKIT_DIR}"
+    "${TOOLKIT_DIR}/ToolKit"
+    "${PLUGIN_CODE_DIR}"
+    ${enet_SOURCE_DIR}/include
+)
+target_compile_definitions(ToolKitNetworkingRuntimeStatic PUBLIC TK_NET_STATIC)
+
 set(PCH
   "${TOOLKIT_DIR}/ToolKit/stdafx.h"
   "${TOOLKIT_DIR}/ToolKit/Types.h")
 
-target_precompile_headers(${PLUGIN_PROJECT_NAME} PRIVATE ${PCH})
+target_precompile_headers(ToolKitNetworkingRuntime PRIVATE ${PCH})
+target_precompile_headers(ToolKitNetworkingRuntimeStatic PRIVATE ${PCH})
+target_compile_definitions(ToolKitNetworkingRuntime PRIVATE $<$<CONFIG:Debug>:TK_DEBUG>)
+target_compile_definitions(ToolKitNetworkingRuntimeStatic PUBLIC $<$<CONFIG:Debug>:TK_DEBUG>)
 
-# Set TK_DEBUG for toolkit.
+set_target_properties(ToolKitNetworkingRuntime PROPERTIES
+    OUTPUT_NAME "ToolKitNetworkingRuntime"
+    RUNTIME_OUTPUT_DIRECTORY ${PLUGIN_BIN_DIR}
+    ARCHIVE_OUTPUT_DIRECTORY ${PLUGIN_BIN_DIR}
+)
+
+set_target_properties(ToolKitNetworkingRuntimeStatic PROPERTIES
+    OUTPUT_NAME "ToolKitNetworkingRuntimeStatic"
+    ARCHIVE_OUTPUT_DIRECTORY ${PLUGIN_BIN_DIR}
+)
+
+add_custom_command(TARGET ToolKitNetworkingRuntime POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+        -DSRC="$<TARGET_FILE:ToolKitNetworkingRuntime>"
+        -DDST="${TOOLKIT_DIR}/Bin/"
+        -P "${PLUGIN_CODE_DIR}/CMakeSafeCopyIfDifferent.cmake"
+    VERBATIM
+)
+
+set(TK_NET_HOST_PROJECT_BIN "${PLUGIN_CODE_DIR}/../../../Codes/Bin")
+get_filename_component(TK_NET_HOST_PROJECT_BIN "${TK_NET_HOST_PROJECT_BIN}" ABSOLUTE)
+add_custom_command(TARGET ToolKitNetworkingRuntime POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+        -DSRC="$<TARGET_FILE:ToolKitNetworkingRuntime>"
+        -DDST="${TK_NET_HOST_PROJECT_BIN}/"
+        -P "${PLUGIN_CODE_DIR}/CMakeSafeCopyIfDifferent.cmake"
+    VERBATIM
+)
+
+add_library(${PLUGIN_PROJECT_NAME} SHARED ${EDITOR_SOURCE} ${HEADERS})
+target_link_directories(${PLUGIN_PROJECT_NAME} PRIVATE "${TOOLKIT_DIR}/Bin")
+target_link_directories(${PLUGIN_PROJECT_NAME} PRIVATE "${TK_DEPENDECY_OUT_DIR}")
+target_link_libraries(${PLUGIN_PROJECT_NAME} PRIVATE
+    ToolKitNetworkingRuntime
+    ${toolkit}
+    ${imgui}
+    ${editor}
+    Ws2_32
+)
+target_include_directories(${PLUGIN_PROJECT_NAME} PRIVATE ${enet_SOURCE_DIR}/include)
+target_compile_definitions(${PLUGIN_PROJECT_NAME} PRIVATE TK_WITH_EDITOR TK_DLL_IMPORT TK_NET_EDITOR_EXPORT)
+target_precompile_headers(${PLUGIN_PROJECT_NAME} PRIVATE ${PCH})
 target_compile_definitions(${PLUGIN_PROJECT_NAME} PRIVATE $<$<CONFIG:Debug>:TK_DEBUG>)
 
-# Place artifacts strictly in the bin.
-# Packer picks them from here to create publishable packages.
 set_target_properties(${PLUGIN_PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${PLUGIN_BIN_DIR}
     ARCHIVE_OUTPUT_DIRECTORY ${PLUGIN_BIN_DIR}
@@ -193,6 +257,14 @@ get_property(isMultiConfig GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if(isMultiConfig)
     foreach(config ${CMAKE_CONFIGURATION_TYPES})
         string(TOUPPER ${config} config_upper)
+        set_target_properties(ToolKitNetworkingRuntime PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY_${config_upper} ${PLUGIN_BIN_DIR}
+            ARCHIVE_OUTPUT_DIRECTORY_${config_upper} ${PLUGIN_BIN_DIR}
+            PDB_OUTPUT_DIRECTORY_${config_upper} ${PLUGIN_BIN_DIR}
+        )
+        set_target_properties(ToolKitNetworkingRuntimeStatic PROPERTIES
+            ARCHIVE_OUTPUT_DIRECTORY_${config_upper} ${PLUGIN_BIN_DIR}
+        )
         set_target_properties(${PLUGIN_PROJECT_NAME} PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY_${config_upper} ${PLUGIN_BIN_DIR}
             ARCHIVE_OUTPUT_DIRECTORY_${config_upper} ${PLUGIN_BIN_DIR}
@@ -201,12 +273,12 @@ if(isMultiConfig)
     endforeach()
 endif()
 
-# MSVC specific options.
 if (MSVC)
+    target_link_options(ToolKitNetworkingRuntime PRIVATE $<$<NOT:$<CONFIG:DEBUG>>:/INCREMENTAL:NO> $<$<NOT:$<CONFIG:DEBUG>>:/LTCG>)
+    target_link_options(ToolKitNetworkingRuntimeStatic PRIVATE $<$<NOT:$<CONFIG:DEBUG>>:/LTCG>)
     target_link_options(${PLUGIN_PROJECT_NAME} PRIVATE $<$<NOT:$<CONFIG:DEBUG>>:/INCREMENTAL:NO> $<$<NOT:$<CONFIG:DEBUG>>:/LTCG>)
 endif()
 
-#For hot reload rename the previous output.
 set(DLL $<TARGET_FILE:${PLUGIN_PROJECT_NAME}>)
 set(PDB $<TARGET_PDB_FILE:${PLUGIN_PROJECT_NAME}>)
 

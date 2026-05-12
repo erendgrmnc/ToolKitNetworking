@@ -1,0 +1,38 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'textColor': '#000000', 'actorTextColor': '#000000', 'signalTextColor': '#000000', 'noteTextColor': '#000000', 'messageTextColor': '#000000'}}}%%
+sequenceDiagram
+    participant C as GameClient (ENet)
+    participant NM as Server NetworkManager
+    participant NC as NetworkComponent (Entity)
+    participant S as GameServer (ENet)
+
+    %% Server Tick
+    rect rgb(230, 240, 250)
+    Note over S, NM: 1. Server Tick Update Loop
+    S->>NM: UpdateServer(deltaTime)
+    NM->>NC: Gather State (Delta Compression)
+    Note over NC: Checks NetworkVariable dirty flags
+    NC-->>NM: Serialized PacketStream
+    NM->>S: BroadcastSnapshot()
+    S-->>C: State Packet
+    end
+    
+    %% Client Receive
+    rect rgb(240, 250, 240)
+    Note over C, NC: 2. Client Prediction & State Apply
+    C->>NM: ReceivePacket(State)
+    NM->>NC: Deserialize & Apply State
+    Note over NC: Updates State History
+    NC-->>NC: Interpolate Transform (Smooth Movement)
+    end
+    
+    %% Client Action
+    rect rgb(250, 230, 240)
+    Note over C, NC: 3. Client Action (RPC)
+    NC->>NM: SendRPC("OnFire", target=Server)
+    Note over NM: Resolves function hash
+    NM->>C: Write RPCPacket to Stream
+    C-->>S: RPCPacket
+    S->>NM: ReceivePacket(RPC)
+    NM->>NC: HandleRPC(hash)
+    Note over NC: Server executes "OnFire"
+    end

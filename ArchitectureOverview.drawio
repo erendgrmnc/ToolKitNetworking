@@ -1,0 +1,214 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="Electron" modified="2024-03-01T12:00:00.000Z" agent="Mozilla/5.0" version="22.0.8" type="device">
+  <diagram id="tk_net_arch" name="Architecture">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" background="#ffffff" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Subgraph Backgrounds -->
+        <mxCell id="2" value="ToolKit Editor Integration" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=#f1f8e9;strokeColor=#8bc34a;dashed=1;strokeWidth=2;spacingTop=10;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="50" y="50" width="350" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="3" value="ToolKit Engine ECS" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=#e0f7fa;strokeColor=#00bcd4;strokeWidth=2;spacingTop=10;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="450" y="50" width="350" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="4" value="Network Role Initialization" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=#f5f5f5;strokeColor=#9e9e9e;dashed=1;strokeWidth=2;spacingTop=10;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="50" y="220" width="350" height="320" as="geometry" />
+        </mxCell>
+        <mxCell id="5" value="ToolKitNetworking Core" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=#fff3e0;strokeColor=#ff9800;strokeWidth=2;spacingTop=10;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="450" y="220" width="390" height="320" as="geometry" />
+        </mxCell>
+        <mxCell id="6" value="Low-Level Transport (ENet)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=#fce4ec;strokeColor=#e91e63;strokeWidth=2;spacingTop=10;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="50" y="570" width="350" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="7" value="Data &amp; Serialization Layer" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=#f3e5f5;strokeColor=#9c27b0;strokeWidth=2;spacingTop=10;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="450" y="570" width="510" height="140" as="geometry" />
+        </mxCell>
+
+        <!-- Nodes -->
+        <!-- Editor -->
+        <mxCell id="10" value="ToolKit Editor Interface" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#4caf50;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="70" y="100" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="11" value="CustomDataView&lt;br/&gt;(Network Component UI)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#4caf50;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="240" y="100" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ECS -->
+        <mxCell id="12" value="ToolKit::Entity" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e0f7fa;strokeColor=#00bcd4;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="470" y="100" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="13" value="NetworkComponent&lt;br/&gt;RPC &amp; Network Variables" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e0f7fa;strokeColor=#00bcd4;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="620" y="100" width="160" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Role Init -->
+        <mxCell id="14" value="NetworkRole" style="rhombus;whiteSpace=wrap;html=1;fillColor=#eceff1;strokeColor=#607d8b;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="175" y="270" width="100" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="15" value="StartAsClient()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff3e0;strokeColor=#ff9800;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="70" y="420" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="16" value="StartAsServer()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff3e0;strokeColor=#ff9800;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="260" y="420" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="17" value="StartAsServer() &amp;amp;&lt;br/&gt;StartAsClient()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff3e0;strokeColor=#ff9800;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="150" y="480" width="150" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Core -->
+        <mxCell id="18" value="NetworkManager&lt;br/&gt;Lifecycle &amp; Tick Orchestrator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff3e0;strokeColor=#ff9800;strokeWidth=2;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="550" y="270" width="190" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="19" value="GameServer&lt;br/&gt;Authoritative Host" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff3e0;strokeColor=#ff9800;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="470" y="380" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="20" value="GameClient&lt;br/&gt;Client Peer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff3e0;strokeColor=#ff9800;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="670" y="380" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="21" value="NetworkSpawnService&lt;br/&gt;Prefab Instantiator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff3e0;strokeColor=#ff9800;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="550" y="460" width="190" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Transport -->
+        <mxCell id="22" value="ENet Host&lt;br/&gt;Reliable UDP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fce4ec;strokeColor=#e91e63;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="70" y="620" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="23" value="ENet Peer&lt;br/&gt;Reliable UDP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fce4ec;strokeColor=#e91e63;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="240" y="620" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Data -->
+        <mxCell id="24" value="NetworkVariable&lt;br/&gt;Delta State Tracking" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f3e5f5;strokeColor=#9c27b0;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="470" y="620" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="25" value="PacketStream&lt;br/&gt;Binary Stream Writer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f3e5f5;strokeColor=#9c27b0;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="640" y="620" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="26" value="RPC Registry&lt;br/&gt;Cross-DLL Hashing" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f3e5f5;strokeColor=#9c27b0;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="800" y="620" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Internet -->
+        <mxCell id="27" value="Internet" style="ellipse;whiteSpace=wrap;html=1;fillColor=#eceff1;strokeColor=#607d8b;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="150" y="780" width="150" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Edges -->
+        <mxCell id="e1" value="Inspects &amp;amp; Modifies" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="10" target="11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="Configures" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;dashed=1;" edge="1" parent="1" source="11" target="13">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="12" target="13">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e4" value="Client" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="14" target="15">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" value="DedicatedServer" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="14" target="16">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="Host" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="14" target="17">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e7" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="15" target="18">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="130" y="300" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e8" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="16" target="18">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="320" y="300" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e9" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="17" target="18">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="430" y="500" />
+              <mxPoint x="430" y="300" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="e10" value="If Server/Host" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="18" target="19">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" value="If Client/Host" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="18" target="20">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" value="Owns" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="18" target="21">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e14" value="State &amp;amp; RPC Requests" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;startArrow=classic;endArrow=classic;" edge="1" parent="1" source="13" target="18">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e15" value="Binds Port" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="19" target="22">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e16" value="Connects to Host" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="20" target="23">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e17" value="Serializes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;dashed=1;" edge="1" parent="1" source="13" target="24">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="700" y="190" />
+              <mxPoint x="540" y="190" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e18" value="Encodes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;dashed=1;" edge="1" parent="1" source="24" target="25">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e19" value="Looks up" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;dashed=1;" edge="1" parent="1" source="13" target="26">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="700" y="190" />
+              <mxPoint x="870" y="190" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e20" value="Encodes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;dashed=1;" edge="1" parent="1" source="26" target="25">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e21" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="25" target="22">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="710" y="730" />
+              <mxPoint x="140" y="730" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e22" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;" edge="1" parent="1" source="25" target="23">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="710" y="730" />
+              <mxPoint x="310" y="730" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="e23" value="UDP Packets" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;startArrow=classic;endArrow=classic;" edge="1" parent="1" source="22" target="27">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e24" value="UDP Packets" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;startArrow=classic;endArrow=classic;" edge="1" parent="1" source="23" target="27">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -15,7 +15,7 @@
 
 namespace ToolKit::Editor {
 
-struct TK_NET_API NetworkPlayPlannerSettings {
+struct TK_NET_EDITOR_API NetworkPlayPlannerSettings {
   uint playerCount = 2;
   bool runDedicatedServerHeadless = true;
   uint basePort = 7777;
@@ -23,7 +23,7 @@ struct TK_NET_API NetworkPlayPlannerSettings {
   NetworkPlayTopology topology = NetworkPlayTopology::ListenServer;
 };
 
-struct TK_NET_API NetworkPlayInstanceSpec {
+struct TK_NET_EDITOR_API NetworkPlayInstanceSpec {
   String instanceId;
   String roleName;
   ToolKitNetworking::HostingMode hostingMode =
@@ -37,7 +37,7 @@ struct TK_NET_API NetworkPlayInstanceSpec {
   uint maxClients = 0;
 };
 
-struct TK_NET_API NetworkPlaySessionSpec {
+struct TK_NET_EDITOR_API NetworkPlaySessionSpec {
   String launchId;
   String launchRoot;
   String projectRoot;
@@ -45,7 +45,9 @@ struct TK_NET_API NetworkPlaySessionSpec {
   String configTemplateRoot;
   String resourceRoot;
   String scenePath;
+  String sceneSnapshotPath;
   String executablePath;
+  StringArray runtimePluginNames;
   NetworkPlayTopology topology = NetworkPlayTopology::ListenServer;
   uint16_t basePort = 0;
   uint playerCount = 1;
@@ -53,7 +55,7 @@ struct TK_NET_API NetworkPlaySessionSpec {
   std::vector<NetworkPlayInstanceSpec> childInstances;
 };
 
-struct TK_NET_API NetworkPlaySceneConfig {
+struct TK_NET_EDITOR_API NetworkPlaySceneConfig {
   ToolKitNetworking::JoinMethod joinMethod =
       ToolKitNetworking::JoinMethod::DirectAddress;
   uint maxClients = 0;
@@ -64,7 +66,7 @@ struct TK_NET_API NetworkPlaySceneConfig {
   String advertisedAddress;
 };
 
-struct TK_NET_API NetworkPlaySessionMetadata {
+struct TK_NET_EDITOR_API NetworkPlaySessionMetadata {
   String launchId;
   String launchRoot;
   String projectRoot;
@@ -72,24 +74,26 @@ struct TK_NET_API NetworkPlaySessionMetadata {
   String configTemplateRoot;
   String resourceRoot;
   String scenePath;
+  String sceneSnapshotPath;
   String executablePath;
+  StringArray runtimePluginNames;
 };
 
-TK_NET_API uint16_t ResolveNetworkPlayBasePort(
+TK_NET_EDITOR_API uint16_t ResolveNetworkPlayBasePort(
     const NetworkPlayPlannerSettings &settings);
 
-TK_NET_API bool BuildNetworkPlaySessionSpec(
+TK_NET_EDITOR_API bool BuildNetworkPlaySessionSpec(
     const NetworkPlayPlannerSettings &settings, const NetworkPlaySceneConfig &scene,
     const NetworkPlaySessionMetadata &metadata, NetworkPlaySessionSpec &session,
     String &errorMessage);
 
-TK_NET_API String BuildNetworkPlayManifestXml(
+TK_NET_EDITOR_API String BuildNetworkPlayManifestXml(
     const NetworkPlaySessionSpec &session, const NetworkPlayInstanceSpec &instance,
     const String &configRoot);
 
-TK_NET_API String BuildNetworkPlayLaunchId();
+TK_NET_EDITOR_API String BuildNetworkPlayLaunchId();
 
-TK_NET_API String GetNetworkPlayRoleFlag(
+TK_NET_EDITOR_API String GetNetworkPlayRoleFlag(
     ToolKitNetworking::HostingMode hostingMode);
 
 } // namespace ToolKit::Editor

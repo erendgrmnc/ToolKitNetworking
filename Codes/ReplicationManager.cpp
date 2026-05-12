@@ -204,6 +204,7 @@ void ReplicationManager::ResetAuthenticationState() {
   m_handshakeStarted = false;
   m_localSessionAuthenticated = false;
   m_localAuthFailed = false;
+  m_pendingPreAuthSpawns.clear();
   m_localClientNonce = 0;
   m_localServerNonce = 0;
   m_pendingJoinRequest = SessionJoinRequest{};
@@ -290,6 +291,10 @@ NetworkComponent *ReplicationManager::SpawnNetworkObject(
     packet.rw = rot.w;
     strncpy(packet.className, prefabName.c_str(), 127);
 
+    TK_LOG(("Replication server broadcasting spawn netID=" +
+            std::to_string(packet.networkID) + " owner=" +
+            std::to_string(packet.ownerID) + " class=" + prefabName)
+               .c_str());
     m_owner.m_server->SendGlobalPacket(packet, true);
   }
 
@@ -356,6 +361,7 @@ NetworkComponent *ReplicationManager::FindComponentByNetworkID(int networkID) co
 
 bool ReplicationManager::BeginSessionHandshake(const SessionJoinRequest &request) {
   if (!m_owner.m_client || !m_owner.m_client->GetIsConnected()) {
+    TK_LOG("Replication handshake begin failed: client transport is not connected.");
     RejectLocalSession(DisconnectReason::TransportError,
                        "Transport is not connected for handshake.");
     return false;
@@ -374,6 +380,10 @@ bool ReplicationManager::BeginSessionHandshake(const SessionJoinRequest &request
   CopyStringToPacketField(hello.joinCredential, request.joinCredential);
   CopyStringToPacketField(hello.buildCompatibilityId,
                           request.buildCompatibilityId);
+  TK_LOG(("Replication client sending HandshakeHello session=" +
+          request.sessionId + " target=" + request.targetEndpoint.host + ":" +
+          std::to_string(request.targetEndpoint.port))
+             .c_str());
   m_owner.m_client->SendPacket(hello, true);
   return true;
 }
@@ -404,6 +414,9 @@ void ReplicationManager::HandleHandshakeHello(HandshakeHelloPacket *packet,
     return;
   }
 
+  TK_LOG(("Replication server received HandshakeHello from peer=" +
+          std::to_string(source))
+             .c_str());
   PeerHandshakeState &state = m_peerHandshakeStates[source];
   if (HandshakeSecurity::IsPeerBlocked(state.gate, GetNowMs())) {
     RejectPeer(source, DisconnectReason::RateLimited,
@@ -472,6 +485,9 @@ void ReplicationManager::HandleHandshakeHello(HandshakeHelloPacket *packet,
   HandshakeChallengePacket challenge;
   challenge.clientNonce = state.gate.clientNonce;
   challenge.serverNonce = state.gate.serverNonce;
+  TK_LOG(("Replication server sending HandshakeChallenge to peer=" +
+          std::to_string(source))
+             .c_str());
   m_owner.m_server->SendPacketToPeer(source, challenge, true);
 }
 
@@ -492,6 +508,7 @@ void ReplicationManager::HandleHandshakeChallenge(HandshakeChallengePacket *pack
   HandshakeResponsePacket response;
   response.clientNonce = m_localClientNonce;
   response.serverNonce = m_localServerNonce;
+  TK_LOG("Replication client received HandshakeChallenge; sending HandshakeResponse.");
   m_owner.m_client->SendPacket(response, true);
 }
 
@@ -532,6 +549,9 @@ void ReplicationManager::HandleHandshakeResponse(HandshakeResponsePacket *packet
   state.gate.challengeConsumed = true;
   state.gate.authenticated = true;
   m_owner.m_server->AddPeer(source);
+  TK_LOG(("Replication server accepted handshake for peer=" +
+          std::to_string(source))
+             .c_str());
 
   HandshakeAcceptPacket accept;
   accept.assignedPeerID = source;
@@ -539,6 +559,9 @@ void ReplicationManager::HandleHandshakeResponse(HandshakeResponsePacket *packet
   CopyStringToPacketField(accept.buildCompatibilityId,
                           m_owner.GetActiveSession().buildCompatibilityId);
   m_owner.m_server->SendPacketToPeer(source, accept, true);
+  TK_LOG(("Replication server sent HandshakeAccept to peer=" +
+          std::to_string(source))
+             .c_str());
 
   GamePacket connectedPacket;
   connectedPacket.type = NetworkMessage::ClientConnected;
@@ -575,13 +598,70 @@ void ReplicationManager::HandleHandshakeAccept(HandshakeAcceptPacket *packet) {
   m_localAuthFailed = false;
   m_authFailureReason = DisconnectReason::None;
   m_authFailureDetail.clear();
+  TK_LOG(("Replication client accepted session; assigned peer=" +
+          std::to_string(packet->assignedPeerID))
+             .c_str());
+
+  if (!m_pendingPreAuthSpawns.empty()) {
+    TK_LOG(("Replication client replaying queued pre-auth spawns count=" +
+            std::to_string(m_pendingPreAuthSpawns.size()))
+               .c_str());
+    std::vector<SpawnPacket> pendingSpawns = std::move(m_pendingPreAuthSpawns);
+    m_pendingPreAuthSpawns.clear();
+    for (const SpawnPacket &spawn : pendingSpawns) {
+      HandleSpawnPacket(spawn);
+    }
+  }
 }
 
 void ReplicationManager::HandleHandshakeReject(HandshakeRejectPacket *packet) {
+  TK_LOG(("Replication handshake rejected: " +
+          PacketStringToString(packet->detail))
+             .c_str());
   RejectLocalSession(static_cast<DisconnectReason>(packet->reason),
                      PacketStringToString(packet->detail));
   if (m_owner.m_client) {
     m_owner.m_client->Disconnect();
+  }
+}
+
+void ReplicationManager::HandleSpawnPacket(const SpawnPacket &packet) {
+  TK_LOG(("Replication client received Spawn netID=" +
+          std::to_string(packet.networkID) + " owner=" +
+          std::to_string(packet.ownerID) + " class=" + packet.className)
+             .c_str());
+
+  if (!FindComponentByNetworkID(packet.networkID)) {
+    std::string className = packet.className;
+    EntityPtr newEntity = nullptr;
+    NetworkComponent *netComp =
+        InstantiateNetworkObject(className, newEntity);
+
+    if (netComp && newEntity) {
+      netComp->SetNetworkID(packet.networkID);
+      netComp->SetOwnerID(packet.ownerID);
+      netComp->SetSpawnClassName(className);
+      netComp->SetIsDynamicallySpawned(true);
+
+      newEntity->m_node->SetTranslation(
+          Vec3(packet.px, packet.py, packet.pz));
+      newEntity->m_node->SetOrientation(
+          Quaternion(packet.rw, packet.rx, packet.ry, packet.rz));
+
+      RegisterComponent(netComp);
+      netComp->OnNetworkSpawn();
+      TK_LOG(("Replication client spawned object netID=" +
+              std::to_string(packet.networkID) + " owner=" +
+              std::to_string(packet.ownerID) + " class=" + className)
+                 .c_str());
+    } else {
+      TK_LOG(("NetworkManager: Client failed to spawn object: " + className)
+                 .c_str());
+    }
+  } else {
+    TK_LOG(("Replication client ignored duplicate Spawn netID=" +
+            std::to_string(packet.networkID))
+               .c_str());
   }
 }
 
@@ -637,6 +717,17 @@ void ReplicationManager::ReceivePacket(int type, GamePacket *payload, int source
 
     if (!m_owner.IsServer() && m_owner.m_client && !m_localSessionAuthenticated &&
         type != NetworkMessage::Shutdown) {
+      if (type == NetworkMessage::Spawn && m_handshakeStarted &&
+          !m_localAuthFailed) {
+        SpawnPacket *spawn = static_cast<SpawnPacket *>(payload);
+        m_pendingPreAuthSpawns.push_back(*spawn);
+        TK_LOG(("Replication client queued pre-auth Spawn netID=" +
+                std::to_string(spawn->networkID) + " owner=" +
+                std::to_string(spawn->ownerID))
+                   .c_str());
+        return;
+      }
+
       RejectLocalSession(DisconnectReason::ProtocolError,
                          "Received non-handshake packet before authentication.");
       return;
@@ -651,6 +742,17 @@ void ReplicationManager::ReceivePacket(int type, GamePacket *payload, int source
 
   if (!m_owner.IsServer() && m_owner.m_client && !m_localSessionAuthenticated &&
       type != NetworkMessage::Shutdown) {
+    if (type == NetworkMessage::Spawn && m_handshakeStarted &&
+        !m_localAuthFailed) {
+      SpawnPacket *spawn = static_cast<SpawnPacket *>(payload);
+      m_pendingPreAuthSpawns.push_back(*spawn);
+      TK_LOG(("Replication client queued pre-auth Spawn netID=" +
+              std::to_string(spawn->networkID) + " owner=" +
+              std::to_string(spawn->ownerID))
+                 .c_str());
+      return;
+    }
+
     RejectLocalSession(DisconnectReason::AuthRejected,
                        "Received replication packet before authentication.");
     return;
@@ -725,6 +827,10 @@ void ReplicationManager::ReceivePacket(int type, GamePacket *payload, int source
     m_peerLastAckedTick[source] = ack->ackTick;
   } else if (type == NetworkMessage::ClientConnected) {
     if (m_owner.IsServer() && m_owner.m_server) {
+      TK_LOG(("Replication server handling ClientConnected for peer=" +
+              std::to_string(source) + " existingComponents=" +
+              std::to_string(m_networkComponents.size()))
+                 .c_str());
       for (auto *nc : m_networkComponents) {
         SpawnPacket msg;
         msg.networkID = nc->GetNetworkID();
@@ -756,9 +862,18 @@ void ReplicationManager::ReceivePacket(int type, GamePacket *payload, int source
         }
 
         m_owner.m_server->SendPacketToPeer(source, msg, true);
+        TK_LOG(("Replication server replayed spawn to peer=" +
+                std::to_string(source) + " netID=" +
+                std::to_string(msg.networkID) + " owner=" +
+                std::to_string(msg.ownerID) + " class=" + msg.className)
+                   .c_str());
       }
 
       if (m_owner.GetPlayerPrefabVal()) {
+        TK_LOG(("Replication server spawning player prefab for peer=" +
+                std::to_string(source) + " prefab=" +
+                m_owner.GetPlayerPrefabVal()->GetFile())
+                   .c_str());
         SpawnNetworkObject(m_owner.GetPlayerPrefabVal()->GetFile(), source,
                            Vec3(0, 5, 0), Quaternion());
       } else {
@@ -767,31 +882,7 @@ void ReplicationManager::ReceivePacket(int type, GamePacket *payload, int source
       }
     }
   } else if (type == NetworkMessage::Spawn) {
-    SpawnPacket *p = (SpawnPacket *)payload;
-
-    if (!FindComponentByNetworkID(p->networkID)) {
-      std::string className = p->className;
-      EntityPtr newEntity = nullptr;
-      NetworkComponent *netComp =
-          InstantiateNetworkObject(className, newEntity);
-
-      if (netComp && newEntity) {
-        netComp->SetNetworkID(p->networkID);
-        netComp->SetOwnerID(p->ownerID);
-        netComp->SetSpawnClassName(className);
-        netComp->SetIsDynamicallySpawned(true);
-
-        newEntity->m_node->SetTranslation(Vec3(p->px, p->py, p->pz));
-        newEntity->m_node->SetOrientation(
-            Quaternion(p->rw, p->rx, p->ry, p->rz));
-
-        RegisterComponent(netComp);
-        netComp->OnNetworkSpawn();
-      } else {
-        TK_LOG(("NetworkManager: Client failed to spawn object: " + className)
-                   .c_str());
-      }
-    }
+    HandleSpawnPacket(*static_cast<SpawnPacket *>(payload));
   } else if (type == NetworkMessage::Despawn) {
     DespawnPacket *p = (DespawnPacket *)payload;
     if (NetworkComponent *target = FindComponentByNetworkID(p->networkID)) {

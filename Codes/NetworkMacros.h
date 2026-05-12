@@ -2,10 +2,18 @@
 #include <tuple>
 #include "NetworkRPCRegistry.h"
 
-#ifdef TK_NET_EXPORT
+#ifdef TK_NET_STATIC
+    #define TK_NET_API
+#elif defined(TK_NET_EXPORT)
     #define TK_NET_API __declspec(dllexport)
 #else
     #define TK_NET_API __declspec(dllimport)
+#endif
+
+#ifdef TK_NET_EDITOR_EXPORT
+    #define TK_NET_EDITOR_API __declspec(dllexport)
+#else
+    #define TK_NET_EDITOR_API __declspec(dllimport)
 #endif
 
 namespace ToolKit::ToolKitNetworking

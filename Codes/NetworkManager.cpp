@@ -30,6 +30,34 @@ namespace {
 JoinMethod JoinMethodFromVariant(const MultiChoiceVariant &variant) {
   return variant.GetEnum<JoinMethod>();
 }
+
+const char *HostingModeName(HostingMode hostingMode) {
+  switch (hostingMode) {
+  case HostingMode::None:
+    return "None";
+  case HostingMode::Client:
+    return "Client";
+  case HostingMode::DedicatedServer:
+    return "DedicatedServer";
+  case HostingMode::ListenServer:
+    return "ListenServer";
+  }
+  return "Unknown";
+}
+
+const char *JoinMethodName(JoinMethod joinMethod) {
+  switch (joinMethod) {
+  case JoinMethod::DirectAddress:
+    return "DirectAddress";
+  case JoinMethod::SessionDirectory:
+    return "SessionDirectory";
+  case JoinMethod::LanDiscovery:
+    return "LanDiscovery";
+  case JoinMethod::BrokeredHostedSession:
+    return "BrokeredHostedSession";
+  }
+  return "Unknown";
+}
 } // namespace
 } // namespace ToolKit::ToolKitNetworking
 
@@ -141,7 +169,29 @@ ToolKit::ToolKitNetworking::NetworkManager::~NetworkManager() {
 }
 
 bool ToolKit::ToolKitNetworking::NetworkManager::StartConfiguredSession() {
-  return m_sessionManager != nullptr && m_sessionManager->StartConfiguredSession();
+  if (m_sessionManager == nullptr) {
+    TK_LOG("NetworkManager StartConfiguredSession skipped: no session manager.");
+    return false;
+  }
+
+  const SessionBootstrapConfig config = GetSessionBootstrapConfig();
+  TK_LOG(("NetworkManager StartConfiguredSession role=" +
+          std::to_string(static_cast<int>(GetRoleVal().GetEnum<NetworkRole>())) +
+          " hostingMode=" + String(HostingModeName(config.hostingMode)) +
+          " joinMethod=" + String(JoinMethodName(config.joinMethod)) +
+          " connect=" + config.connectHost + ":" +
+          std::to_string(config.connectPort) + " listen=" +
+          std::to_string(config.listenPort))
+             .c_str());
+
+  const bool started = m_sessionManager->StartConfiguredSession();
+  const ConnectionStatus status = m_sessionManager->GetConnectionStatus();
+  TK_LOG(("NetworkManager StartConfiguredSession result=" +
+          std::to_string(started ? 1 : 0) + " state=" +
+          std::to_string(static_cast<int>(status.state)) + " detail=" +
+          status.detailMessage)
+             .c_str());
+  return started;
 }
 
 bool ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(
@@ -165,7 +215,13 @@ bool ToolKit::ToolKitNetworking::NetworkManager::StartAsClient(
       client->RegisterPacketHandler(NetworkMessage::ClientConnected, this);
       client->RegisterPacketHandler(NetworkMessage::Shutdown, this);
       client->RegisterPacketHandler(NetworkMessage::RPC, this);
+      TK_LOG(("Started as client connecting to " + host + ":" +
+              std::to_string(portNum))
+                 .c_str());
     } else {
+      TK_LOG(("Failed to start client transport for " + host + ":" +
+              std::to_string(portNum))
+                 .c_str());
       m_client = nullptr;
     }
     return isConnected;
@@ -306,34 +362,34 @@ int ToolKit::ToolKitNetworking::NetworkManager::GetLocalPeerID() const {
 }
 
 bool ToolKit::ToolKitNetworking::NetworkManager::IsDedicatedServer() const {
-  return m_role.GetEnum<NetworkRole>() == NetworkRole::DedicatedServer;
+  return GetRoleVal().GetEnum<NetworkRole>() == NetworkRole::DedicatedServer;
 }
 
 bool ToolKit::ToolKitNetworking::NetworkManager::IsHost() const {
-  return m_role.GetEnum<NetworkRole>() == NetworkRole::Host;
+  return GetRoleVal().GetEnum<NetworkRole>() == NetworkRole::Host;
 }
 
 bool ToolKit::ToolKitNetworking::NetworkManager::IsClient() const {
-  return m_role.GetEnum<NetworkRole>() == NetworkRole::Client;
+  return GetRoleVal().GetEnum<NetworkRole>() == NetworkRole::Client;
 }
 
 ToolKit::ToolKitNetworking::SessionBootstrapConfig
 ToolKit::ToolKitNetworking::NetworkManager::GetSessionBootstrapConfig() const {
   SessionBootstrapConfig config;
   config.hostingMode = GetConfiguredHostingMode();
-  config.joinMethod = JoinMethodFromVariant(m_sessionJoinMethod);
-  config.connectHost = m_connectHost;
+  config.joinMethod = JoinMethodFromVariant(GetSessionJoinMethodVal());
+  config.connectHost = GetConnectHostVal();
   config.connectPort =
-      static_cast<uint16_t>((std::min<uint>)(m_connectPort, 65535u));
+      static_cast<uint16_t>((std::min<uint>)(GetConnectPortVal(), 65535u));
   config.listenPort =
-      static_cast<uint16_t>((std::min<uint>)(m_listenPort, 65535u));
-  config.bindAddress = m_bindAddress;
-  config.advertisedAddress = m_advertisedAddress;
-  config.buildCompatibilityId = m_buildCompatibilityId;
-  config.sessionId = m_sessionId;
-  config.joinCredential = m_joinCredential;
-  config.maxClients = (std::max)(1u, m_maxClients);
-  config.requireJoinCredential = m_requireJoinCredential;
+      static_cast<uint16_t>((std::min<uint>)(GetListenPortVal(), 65535u));
+  config.bindAddress = GetBindAddressVal();
+  config.advertisedAddress = GetAdvertisedAddressVal();
+  config.buildCompatibilityId = GetBuildCompatibilityIdVal();
+  config.sessionId = GetSessionIdVal();
+  config.joinCredential = GetJoinCredentialVal();
+  config.maxClients = (std::max)(1u, GetMaxClientsVal());
+  config.requireJoinCredential = GetRequireJoinCredentialVal();
   return config;
 }
 
@@ -349,7 +405,8 @@ ToolKit::ToolKitNetworking::NetworkManager::GetNetworkComponents() const {
 
 ToolKit::ToolKitNetworking::HostingMode
 ToolKit::ToolKitNetworking::NetworkManager::GetConfiguredHostingMode() const {
-  return SessionCore::LegacyRoleToHostingMode(m_role.GetEnum<NetworkRole>());
+  return SessionCore::LegacyRoleToHostingMode(
+      GetRoleVal().GetEnum<NetworkRole>());
 }
 
 ToolKit::ToolKitNetworking::SessionDirectoryBrokerRuntimeConfig
@@ -357,21 +414,22 @@ ToolKit::ToolKitNetworking::NetworkManager::GetSessionDirectoryBrokerRuntimeConf
     const {
   SessionDirectoryBrokerRuntimeConfig config;
   config.enabled =
-      !m_sessionDirectoryBrokerUrl.empty() ||
-      !m_sessionDirectoryBrokerAuthTokenEnvVar.empty();
-  config.baseUrl = m_sessionDirectoryBrokerUrl;
-  config.authTokenSource = m_sessionDirectoryBrokerAuthTokenEnvVar;
+      !GetSessionDirectoryBrokerUrlVal().empty() ||
+      !GetSessionDirectoryBrokerAuthTokenEnvVarVal().empty();
+  config.baseUrl = GetSessionDirectoryBrokerUrlVal();
+  config.authTokenSource = GetSessionDirectoryBrokerAuthTokenEnvVarVal();
   const char *tokenValue =
-      m_sessionDirectoryBrokerAuthTokenEnvVar.empty()
+      GetSessionDirectoryBrokerAuthTokenEnvVarVal().empty()
           ? nullptr
-          : std::getenv(m_sessionDirectoryBrokerAuthTokenEnvVar.c_str());
+          : std::getenv(GetSessionDirectoryBrokerAuthTokenEnvVarVal().c_str());
   if (tokenValue != nullptr) {
     config.authToken = tokenValue;
   }
   config.requestTimeoutMs =
-      static_cast<uint32_t>((std::max)(1u, m_sessionDirectoryBrokerTimeoutMs));
+      static_cast<uint32_t>(
+          (std::max)(1u, GetSessionDirectoryBrokerTimeoutMsVal()));
   config.allowInsecureHttpForLocalDev =
-      m_allowInsecureSessionDirectoryBrokerForLocalDev;
+      GetAllowInsecureSessionDirectoryBrokerForLocalDevVal();
   return config;
 }
 
