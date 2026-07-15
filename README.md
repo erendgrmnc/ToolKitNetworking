@@ -28,10 +28,32 @@ This plugin serves as the core networking layer, handling low-level packet manag
 
 ## Architecture
 
+![Architecture Overview](docs/diagrams/ArchitectureOverview.png)
+
 *   **`NetworkManager`**: The central hub. Manages ENet host/peer lifecycles, processes incoming packets, and orchestrates the tick update loop.
 *   **`NetworkComponent`**: The base class for networked entities. Handles property serialization (Position, Rotation) and RPC routing.
 *   **`PacketStream`**: A custom binary stream writer/reader optimized for game data.
 *   **`NetworkRPCRegistry`**: A static singleton that maps function name hashes to their handler delegates.
+
+### Replication Flow
+
+![Replication Flow](docs/diagrams/ReplicationFlow.png)
+
+Editable sources for both diagrams (`.mmd` Mermaid and `.drawio`) live in [`docs/diagrams/`](docs/diagrams/).
+
+## Documentation
+
+*   [Project Overview](docs/PROJECT_OVERVIEW.md)
+*   [Build Guide](docs/BUILD.md)
+*   [Contributing](docs/CONTRIBUTING.md)
+*   [WSL Handoff Notes](docs/WSL_HANDOFF.md)
+
+### Plans & Roadmaps
+
+*   [Production Networking Plan](docs/plans/PRODUCTION_NETWORKING_PLAN.md)
+*   [Editor Network Play Plan](docs/plans/EDITOR_NETWORK_PLAY_PLAN.md)
+*   [Testing Framework Plan](docs/plans/TESTING_FRAMEWORK_PLAN.md)
+*   [Network Security & Endpoint Roadmap](docs/plans/NETWORK_SECURITY_AND_ENDPOINT_ROADMAP.md)
 
 ## Build Requirements
 *   **CMake:** 3.6+

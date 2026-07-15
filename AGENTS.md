@@ -42,7 +42,7 @@ Plugin runtime and editor integration:
 - `Codes/PluginMain.cpp`
 - `Codes/PluginMain.h`
 - `Config/Plugin.settings`
-- `EDITOR_NETWORK_PLAY_PLAN.md`
+- `docs/plans/EDITOR_NETWORK_PLAY_PLAN.md`
 
 Core networking systems:
 
@@ -88,7 +88,7 @@ Useful upstream engine references:
 - The local playable instance remains the in-editor simulation session.
 - Additional clients and dedicated server remain standalone runtime/game processes.
 - Launcher ownership is being moved toward upstream ToolKit editor/engine code; avoid adding more raw process-launch behavior to `PluginMain` unless the task explicitly requires temporary glue.
-- See `EDITOR_NETWORK_PLAY_PLAN.md` for the current engine-owned launcher and simulation boot-package refactor plan.
+- See `docs/plans/EDITOR_NETWORK_PLAY_PLAN.md` for the current engine-owned launcher and simulation boot-package refactor plan.
 
 ## Runtime Model
 

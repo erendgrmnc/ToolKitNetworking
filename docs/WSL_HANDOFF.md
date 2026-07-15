@@ -6,9 +6,9 @@ This file is the handoff state for continuing `Plugins/ToolKitNetworking` work f
 Use this as the starting point instead of re-scanning the whole plugin.
 
 Canonical docs updated with this same checkpoint:
-- [PRODUCTION_NETWORKING_PLAN.md](C:/Users/erendegirmenci/toolkit/eren/Plugins/ToolKitNetworking/PRODUCTION_NETWORKING_PLAN.md)
-- [TESTING_FRAMEWORK_PLAN.md](C:/Users/erendegirmenci/toolkit/eren/Plugins/ToolKitNetworking/TESTING_FRAMEWORK_PLAN.md)
-- [NETWORK_SECURITY_AND_ENDPOINT_ROADMAP.md](C:/Users/erendegirmenci/toolkit/eren/Plugins/ToolKitNetworking/NETWORK_SECURITY_AND_ENDPOINT_ROADMAP.md)
+- [PRODUCTION_NETWORKING_PLAN.md](plans/PRODUCTION_NETWORKING_PLAN.md)
+- [TESTING_FRAMEWORK_PLAN.md](plans/TESTING_FRAMEWORK_PLAN.md)
+- [NETWORK_SECURITY_AND_ENDPOINT_ROADMAP.md](plans/NETWORK_SECURITY_AND_ENDPOINT_ROADMAP.md)
 
 ## Workspace
 - Windows workspace root:
@@ -131,8 +131,8 @@ Current state:
 
 ## Security Direction
 Read first:
-- [NETWORK_SECURITY_AND_ENDPOINT_ROADMAP.md](C:/Users/erendegirmenci/toolkit/eren/Plugins/ToolKitNetworking/NETWORK_SECURITY_AND_ENDPOINT_ROADMAP.md)
-- [PRODUCTION_NETWORKING_PLAN.md](C:/Users/erendegirmenci/toolkit/eren/Plugins/ToolKitNetworking/PRODUCTION_NETWORKING_PLAN.md)
+- [NETWORK_SECURITY_AND_ENDPOINT_ROADMAP.md](plans/NETWORK_SECURITY_AND_ENDPOINT_ROADMAP.md)
+- [PRODUCTION_NETWORKING_PLAN.md](plans/PRODUCTION_NETWORKING_PLAN.md)
 
 Current security position:
 - handshake/auth exists
